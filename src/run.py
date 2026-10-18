@@ -4,7 +4,7 @@ import numpy as np
 import os
 
 # 读取 CSV 文件
-df = pd.read_csv("data/global-temp-time-series.csv",comment = "#")
+df = pd.read_csv("data/data.csv",comment = "#")
 df["Date"] = pd.to_datetime(df["Date"].astype(str),format="%Y%m")
 
 # 查看数据基本信息
