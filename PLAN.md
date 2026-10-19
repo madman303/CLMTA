@@ -1,443 +1,447 @@
-# CLMTA → ClimateScope 项目落地方案
+# CLMTA → ClimateScope 落地方案（适配版 v2）
 
-> 面向「数据 + AI」方向的本科就业 · 双非院校的差异化打法
-> 版本 v3｜2026-10-19｜适用：昆明理工大学 数据科学与大数据技术 大二
+> 更新：2026-10-19｜对象：数据科学与大数据技术大二｜目标：数据 + AI 方向本科就业
+> 约束：**11 月底前只有约 6 周、每周 8 小时（≈48 h）**；无 GPU；DeepSeek API 预算 30 元/月；12 月要复习期末。
+> 本文档是唯一方案源，看完后告诉我「确认」或「改哪里」，我再开工。
 
-## 0. 结论先行
+---
 
-### 0.1 数据已经更新到最新
+## 0. 一页看懂
 
-已从 NOAA 官方接口重新拉取并替换 `data/data.csv`：
+### 0.1 你现在有什么
 
-| 项目 | 更新前 | 更新后 |
-| --- | --- | --- |
-| 时间范围 | 1850-01 ~ 2024-12 | **1850-01 ~ 2026-09** |
-| 记录数 | 2100 | **2121** |
-| 序列数 | 1（全球陆海） | **3（陆海 / 陆地 / 海洋）** |
-| 溯源信息 | 无 | sha256 + 抓取时间 + 原始快照 |
+一份 **NOAA 官方全球陆海温度异常月度数据**（1850-01 ~ 2024-12，2100 条，无缺失无重复），外加一个 pandas「数据体检」脚本。
 
-关键数字：2025 年均值 **1.12 °C**，2026 年 1–9 月均值 **1.17 °C**，2026-09 为 **1.33 °C**；1970 年以来升温速率约 **0.196 °C/十年**；有记录以来最暖月份仍是 2023-09（1.40 °C）。
+我验证过：`data/data.csv` 与 NOAA NCEI 官方 API 返回的 CSV **md5 完全一致**（`56b98213...`），说明数据是真的、可程序化更新；官方现在已发布到 **2026-09**，你手上这份落后约 21 个月。
 
-**为什么要用最新数据**：面试时说「我的管道每月自动更新到上个月」和「CSV 是网盘下载的」，可信度差一个量级。而且 2025–2026 刚好经历 ENSO 相位变化，是天然的分析素材。
+### 0.2 调研结论
 
-### 0.2 哪一版更适合你的简历：C 版
+GitHub 同类项目分四类，中间存在明显空白：
 
-| 维度 | A 版（48 h MVP） | B 版（10 周全量） | **C 版（v2.5，推荐）** |
+| 类别 | 代表 | 规模 | 问题 |
 | --- | --- | --- | --- |
-| 范围 | 管道 + 分析 + 6 模型回测 + Demo | 再加 DL 训练、完整 RAG、MLflow、MCP | A + 3 个高杠杆增强 |
-| 48 h 内完成概率 | 高 | 低 | 高 |
-| 简历深度 | 中 | 高（如果做完） | 中高 |
-| 面试可讲点 | 3 个 | 6 个 | 5 个 |
-| 最大风险 | 偏薄 | 做不完、讲不清 | 需要严格执行周计划 |
-| 适合 | 只想先有一个项目 | 有 10 周完整时间 | **你的情况** |
-
-**结论：选 C 版。** 双非本科简历的第一关不是「模型多先进」，而是「这个人能不能干活、有没有工程习惯」。一个 48 小时做完、能上线、每个数字都能解释的项目，远胜一个 10 周做了一半的「平台」。
-
-C 版在 A 的基础上只加三件事：
-
-1. **业务指标层 + 20 条 SQL**：把分析问题写成可讲清的 SQL（窗口函数、同比、滚动），中厂数据岗面试直接考这个。
-2. **英文 README + 一页英文 Project Brief**：外企筛简历和面试都要看，成本只有 2 小时。
-3. **公网 Demo + 2 分钟演示视频**：所有公司都吃这一套，面试时直接发链接。
-
-### 0.3 双非 + 昆明，怎么打
-
-一句话：**主攻数据开发 / 数据分析 / BI，用 AI 应用做差异化，算法岗只作为加分项。**
-
-- 本科 + 双非投大厂算法岗，简历关就很容易被硕士挤掉；但数据开发、数据分析、BI、数据工程对本科友好得多。
-- 昆明本地数据岗少，主战场是成都、重庆、西安、武汉、深圳、杭州、上海；云南本地国企和银行科技做保底。
-- 外企不唯学历，但英语和项目深度要求高；英文材料 + 可复现仓库是敲门砖。
-- 你现在大二，距离 2028 年秋招还有约两年，足够做 3 个项目 + 2 段实习，不必焦虑。
-
-## 1. 数据更新说明
-
-### 1.1 已完成的变更
-
-| 文件 | 说明 |
-| --- | --- |
-| `data/data.csv` | 主序列，已更新为 1850-01 ~ 2026-09 |
-| `data/raw/` | 3 条序列的原始快照 + 2024 年旧快照（只增不删） |
-| `data/metadata.json` | 每个文件的来源 URL、sha256、行数、时间范围、基准期 |
-| `scripts/update_data.py` | 纯标准库实现，一条命令复现更新 |
-
-设计要点：原始字节保留、不做二次加工；更新前先校验（表头、月份连续、值域、缺失标记），校验不过不覆盖；旧版本自动归档。这就是简历里可以写的「幂等增量更新 + 数据契约」。
-
-### 1.2 怎么复现
-
-```bash
-python scripts/update_data.py            # 拉取最新并校验
-python scripts/update_data.py --dry-run  # 只校验，不写文件
-```
-
-脚本不依赖 pandas，环境坏了也能跑；后续进入项目阶段会迁移到 `src/clmta/ingest/`，并加上 DuckDB 落库。
-
-### 1.3 新数据能讲的故事
-
-- 2023-09（1.40 °C）仍是 1850 年以来最暖月份，2024 年全年 1.25 °C。
-- 2025 年回落到 1.12 °C，2026 年 1–9 月又回到 1.17 °C——这个「回落再反弹」可以用来检验 ENSO 与全球温度的关系。
-- 陆地升温明显快于海洋：2025 年陆地 1.74 °C、海洋 0.83 °C；2026 年 1–9 月陆地 1.63 °C、海洋 0.96 °C。
-- 2020 年代均值 1.06 °C，而 1850 年代是 −0.10 °C。
-
-### 1.4 使用注意
-
-- 温度异常是相对 1901–2000 基准期的偏差，不是绝对温度。
-- 1880 年以前海洋观测稀疏，早期数据不确定性更大，图表和结论必须标注。
-- 2026 年只有 1–9 月，做年度对比时不能直接和完整年份比。
-- 官方会回改历史值，所以每次更新都要保留快照并对比差异。
-
-## 2. 三版方案对比与最终范围
-
-### 2.1 为什么不是 B 版
-
-B 版的深度学习训练（N-HiTS/PatchTST）需要 GPU 和调参时间，完整 RAG 需要语料清洗和评测，MLflow/MCP 是锦上添花。以每周 8 小时、12 月还要期末复习的节奏，B 版大概率停在「数据管道 + 一个 notebook」，反而不如 A/C 完整。
-
-### 2.2 C 版做什么、不做什么
-
-| 做 | 不做（寒假再说） |
-| --- | --- |
-| 多源数据管道 + 校验 + DuckDB | Kafka / Spark / 微服务 |
-| STL / 趋势检验 / 变点 / 极值 | 深度学习训练 |
-| 6 个模型滚动回测 + 显著性检验 | 完整 RAG 知识库 |
-| Streamlit 四页 + 公网部署 | MLflow / Docker Compose |
-| DeepSeek 工具调用 + 10 题评测 | MCP Server |
-| 20 条 SQL + 英文 README + 视频 | 论文复现 |
-
-## 3. 就业策略：双非、昆明、中厂与外企
-
-### 3.1 三个必须接受的现实
-
-1. **学历筛选客观存在。** 大厂算法岗、部分管培生项目会卡学校；但数据开发、数据分析、BI、测试开发、外企 IT 岗对双非本科开放得多。
-2. **昆明本地数据岗少。** 云南的互联网岗位集中在少数国企和银行科技，想拿高薪大概率要去成都、重庆、西安、深圳、杭州、上海。
-3. **实习比项目更硬。** 双非本科最有效的翻身路径是「一段能讲清楚的实习 + 一个能跑的项目」，而不是堆证书。
-
-### 3.2 岗位地图
-
-| 岗位 | 本科可行性 | JD 高频词 | 本项目对应模块 |
-| --- | --- | --- | --- |
-| 数据分析师 | 高 | SQL、Excel、指标体系、可视化、业务分析 | 分析层 + 20 条 SQL + Streamlit |
-| 数据开发 / 数据工程 | 高 | SQL、Python、数仓分层、调度、数据质量 | 数据管道 + DuckDB + 契约校验 |
-| BI / 数据产品 | 中高 | 报表、指标口径、FineBI/Tableau、沟通 | 看板 + 指标层 |
-| AI 应用 / LLM 工程 | 中 | RAG、Agent、Prompt、评测、API | Agent + 评测 |
-| 算法（时序/ML） | 低（多要求硕士） | 特征工程、模型评估、Python | 回测框架 + 模型对比（加分） |
-
-> 结论：把「数据开发 + 分析」当主线，「AI 应用」当差异化，「算法」当面试聊天时的加分项。
-
-### 3.3 目标公司分层
-
-| 层级 | 类型 | 代表（示例，投递前以当年校招为准） | 说明 |
-| --- | --- | --- | --- |
-| 冲刺 | 外企 / 合资 | SAP、IBM、Accenture、ThoughtWorks、HSBC、Standard Chartered、Dell、Ericsson、Nokia、Schneider、Bosch | 不唯学历，重英语、基础、行为面试；数据岗 headcount 少，要早投 |
-| 主攻 | 中厂数据 / BI | 神策、观远、帆软、永洪、星环、Kyligence、涛思、数澜、袋鼠云、明略、百分点、易观 | 看项目匹配和 SQL，本科有机会 |
-| 主攻 | 金融科技子公司 | 招银网络、中电金信、宇信、长亮、神州信息、恒生电子、同花顺 | 双非友好，待遇中上，加班看部门 |
-| 主攻 | 成都 / 重庆 / 西安本地中厂 | 数之联、科来、长安汽车数字化、中兴、比亚迪等 | 离云南近，生活成本低，校招量大 |
-| 保底 | 云南本地国企 / 银行 | 南方电网云南、云南中烟、富滇银行、运营商云南分公司、南天信息、云南能投 | 稳定、本地校友多；多数要笔试，提前准备 |
-| 谨慎 | 外包 | 中软国际、软通动力等 | 保底可以，成长和薪资上限有限，优先选有自研产品的团队 |
-
-> 提醒：外企的「数据岗」很多叫 Data Analyst / Business Analyst / IT Trainee，分布在共享服务中心，不一定在昆明；投递时按城市筛。
-
-### 3.4 城市选择
-
-- **成都**：离昆明最近、中厂多、生活成本可控，第一优先。
-- **重庆 / 西安 / 武汉**：校招量大，竞争比北上深小。
-- **深圳 / 杭州 / 上海**：机会最多，但生活成本和竞争也最高，适合冲刺。
-- **昆明**：国企、银行、运营商为主，适合保底和积累第一段实习。
-
-### 3.5 时间线（2026–2029）
-
-| 时间 | 阶段 | 目标 | 关键动作 |
-| --- | --- | --- | --- |
-| 2026.10–11 | 大二上 | 项目 1（本项目） | 完成 C 版，上线 Demo |
-| 2026.12 | 期末 | 不排项目 | 复习，保持代码手感 |
-| 2027.1–2 | 寒假 | 项目 1 v2 + 基础 | 补 RAG、MLflow；开始 SQL 每日一题 |
-| 2027.3–6 | 大二下 | 项目 2 + 日常实习 | 业务数据 + LLM 应用；投成都/昆明日常实习 |
-| 2027.7–8 | 大二暑假 | 第一段实习 | 优先数据开发/分析，哪怕公司小 |
-| 2027.9–12 | 大三上 | 项目 3 / 深化 | 补算法与八股，准备暑期实习简历 |
-| 2028.1–4 | 大三下 | **暑期实习投递** | 最关键窗口，海投 + 内推 |
-| 2028.7–8 | 大三暑假 | 暑期实习 | 争取转正 |
-| 2028.9–11 | 大四上 | 秋招 | 主攻 + 保底一起投 |
-| 2029.6 | 毕业 | 入职 | — |
-
-### 3.6 简历与英语
-
-- 简历一页，最多两个项目 + 一段实习；项目放前面，课程放后面。
-- 每条 bullet 结构：**动作 + 技术 + 量化结果**，不要写「负责」「参与」。
-- 双非不写学校排名；GPA 或专业排名好看就写，不好看就省略。
-- 外企准备：一页英文简历、2 分钟英文项目自述、STAR 行为面试故事各 3 个。
-- GitHub 主页置顶项目，README 首屏放架构图、benchmark 表、Demo 链接。
-
-## 4. 项目定位：调研结论
-
-### 4.1 GitHub 同类项目分四类
-
-| 类别 | 代表 | 规模 | 不足 |
-| --- | --- | --- | --- |
-| 同题学生项目 | manthankapadia、SimoAntikainen、Akajiaku11 | ★0–100 | 单 CSV + ARIMA + 一张图，无评估、无部署 |
-| 通用时序库 | darts、sktime、statsforecast、Chronos、TimesFM | ★1k–35k | 只做 fit/predict，不管领域数据和解释 |
-| 气候科研 benchmark | ClimateLearn、WeatherBench2、earth2studio | ★0.3k–1.2k | 面向网格气象场，要 ERA5/CMIP + GPU |
-| LLM 数据分析 | Vanna、DB-GPT、WrenAI、SQLBot | ★7k–24k | 架构重、偏通用、领域评测弱 |
+| 同题学生项目 | `manthankapadia/...`(★4)、`SimoAntikainen/sarimax-...`(★5)、`Akajiaku11/...`(★98) | ★0–100 | 单 CSV + 线性回归/SARIMAX + 一张图，无评估、无部署、无测试 |
+| 通用时序库 | darts(★9.6k)、sktime(★10.1k)、statsforecast(★4.9k)、Chronos(★6.1k)、TimesFM(★34.6k) | ★1k–35k | 只做 fit/predict，不管领域数据和解释 |
+| 气候科研 benchmark | ClimateLearn(★355)、WeatherBench2(★639)、earth2studio(★1201) | ★0.3k–1.2k | 面向网格气象场，要 ERA5/CMIP + GPU，个人做不动 |
+| LLM 数据分析 | Vanna(★23.8k)、DB-GPT(★20.2k)、WrenAI(★17.9k) | ★7k–24k | 架构重、通用 SQL 问答，领域深度不足 |
 
 > star 数为 2026-10-19 快照。
 
-### 4.2 空白点
+**没人做的那一格**：面向「月度全球气候指标」的**可复现数据管道 + 诚实预测基准 + 能对话的分析助手 + 公网 Demo**。
 
-面向「月度全球气候指标」的**可复现数据管道 + 诚实预测基准 + 能对话的分析助手 + 公网 Demo**，几乎没人同时做。
+### 0.3 48 小时版的结论
 
-### 4.3 三个卖点
+不追求「大而全」，只做一个**闭环完整、每个环节都能讲清楚**的项目：
 
-1. **数据可信**：官方接口 + sha256 + 幂等更新，不是网盘 CSV。
-2. **评估诚实**：滚动回测、MASE/CRPS/覆盖率、DM 检验；模型没赢就写没赢。
-3. **能对话**：DeepSeek 工具调用 + 小评测集，回答必须带数据来源。
+```
+数据自动更新 → 质量校验 → DuckDB 数仓 → 统计诊断
+   → 6 个模型滚动回测（含 Chronos 零样本）→ Streamlit 可视化
+   → DeepSeek 工具调用问答 → 公网部署 → README/报告/视频
+```
 
-## 5. 系统架构与技术选型
+**砍掉的**（48 h 内做不完，寒假再补）：深度学习训练（N-HiTS/PatchTST）、完整 RAG 知识库、MLflow、Evidently、MCP、K8s。
+**保留的亮点**：滚动回测 + MASE/CRPS/区间覆盖率 + DM 检验、Chronos 零样本对照、DeepSeek 工具调用 + 小评测、公网 Demo。
 
-![ClimateScope 系统架构](docs/architecture.png)
+### 0.4 六周节奏（每周 8 h）
 
-### 5.1 五层架构
+| 周 | 日期 | 主题 | 周末必须有的东西 |
+| --- | --- | --- | --- |
+| 1 | 10.19–10.25 | 修地基 + 数据管道 | `make data` 一键复现 1850–2026，测试绿 |
+| 2 | 10.26–11.01 | 统计分析 | STL/趋势/变点/极值 6 张核心图 + 3 条结论 |
+| 3 | 11.02–11.08 | 回测框架 + 统计基线 | 回测引擎 + 4 个基线 + benchmark 表 v1 |
+| 4 | 11.09–11.15 | LightGBM + Chronos | 6 模型完整对比 + 误差随 horizon 图 |
+| 5 | 11.16–11.22 | Streamlit + 部署 | 公网可访问的 4 页 Demo |
+| 6 | 11.23–11.29 | LLM 问答 + 包装 | 能对话的页面 + 10 题评测 + 简历/视频 |
 
-| 层 | 组件 | 产出 |
+> 12 月考试周不排任务。寒假（1–2 月）做 v2：RAG、MLflow、MCP、Docker、技术博客。
+
+---
+
+## 1. 现状盘点（已实际读取验证）
+
+### 1.1 数据
+
+| 项 | 事实 |
+| --- | --- |
+| 文件 | `data/data.csv`（26 KB） |
+| 来源 | NOAA NCEI Climate at a Glance，`globe / land_ocean / monthly`，基准期 1901–2000 |
+| 一致性 | 与官方 CSV md5 相同：`56b98213687172b413f796d5e2dcbf08` |
+| 范围 | 1850-01 ~ 2024-12，2100 条；**无缺失、无重复、无断月** |
+| 数值 | −0.66 ~ 1.40 °C，均值 0.057 °C |
+| 十年均值 | 1850s −0.10 → 1950s −0.02 → 1990s 0.39 → 2020s 1.03 |
+| 时效 | 官方已到 2026-09（1.33 °C）；本地落后 21 个月 |
+
+### 1.2 代码与仓库问题
+
+| 问题 | 证据 | 影响 |
 | --- | --- | --- |
-| 采集层 | NOAA CAG、GISTEMP、CO₂、ONI 适配器 | 原始快照 + metadata |
-| 存储层 | DuckDB（raw / staging / marts）+ Parquet | 可查询的数据集 |
-| 分析层 | STL、Mann-Kendall、Theil-Sen、变点、极值 | 图表 + 结论 |
-| 建模层 | 6 个模型 + 滚动回测 + 指标 + DM 检验 | benchmark 报告 |
-| 应用层 | Streamlit 四页 + DeepSeek Agent + 公网部署 | Demo URL |
+| README 文件名错误 | 写 `data/global-temp-time-series.csv`，实际 `data/data.csv` | 别人跑不通 |
+| 列名错误 | README 写 `Anomaly`，实际 `Departure from Average` | 示例代码报错 |
+| `-999` 说明失真 | 全表 0 个 −999 | 数据说明不可信 |
+| 无依赖声明 | 无 `pyproject.toml` / `requirements.txt` | 不可复现 |
+| 虚拟环境损坏 | `myenv/bin/` 为空 | 无法激活 |
+| 嵌套 Git 仓库 | `CLMTA/CLMTA/.git` + 重复 README | 提交混乱 |
+| 路径依赖 cwd | `src/run.py` 用相对路径 | 换目录即报错 |
+| 无测试/CI/日志 | — | 工程信号为零 |
 
-数据流：数据源 → 采集校验 → DuckDB → 分析/建模 → Streamlit / Agent → 用户。
+> 一句话：现在是「数据集 + 一个 print 脚本」，课程作业水平；但**数据本身是优质资产**，值得围绕它重建。
 
-### 5.2 技术选型
+---
 
-| 层 | 选型 | 理由 |
+## 2. 同类项目对比（详细）
+
+### 2.1 学生项目：题目像、工程弱
+
+- `manthankapadia/Time-series-analysis-of-global-temperature-anomaly`（★4）：GISTEMP + 陆地/海洋数据，ARIMA 类方法。
+- `SimoAntikainen/sarimax-climate-change-forecast`（★5）：SARIMAX + CO₂/ONI/太阳黑子，数据源引用规范，但只有 Notebook。
+- `Ashutoshvinod-04/Global-Temp-Analysis`：GISTEMP 清洗 + 滚动平均 + 线性回归算升温速率。
+- `Akajiaku11/Global-Temp-Anomaly-Analysis`（★98）：偏前端可视化。
+
+**共同不足**：单文件 Notebook、无数据管道、无回测协议、无区间估计、无部署、无测试；结论停留在「画出趋势线」。
+**可借鉴**：协变量选择（CO₂/ENSO/太阳）、数据源引用写法。
+
+### 2.2 通用库与基础模型：当依赖，不当竞品
+
+| 项目 | 用途 | 我们怎么用 |
 | --- | --- | --- |
-| 语言 / 环境 | Python 3.12 + uv | 快、lock 可复现 |
-| 数据处理 | pandas + DuckDB + Parquet | 2 万行足够；SQL 能力可写简历 |
-| 统计 | statsmodels + scipy + ruptures | STL / SARIMAX / MK 检验 / 变点 |
-| ML | LightGBM | 小数据强、CPU 秒级 |
-| 基础模型 | Chronos-Bolt small | 零样本、CPU 可跑、2026 热点 |
-| 前端 | Streamlit + Plotly | 两天出可交互 Demo |
-| LLM | DeepSeek API | 中文强、便宜、OpenAI 兼容 |
-| 测试 | pytest + ruff + GitHub Actions | 最低成本工程信号 |
-| 部署 | 魔搭创空间 / HuggingFace Spaces | 免费公网 URL |
+| `Nixtla/statsforecast` | 快速统计基线 | ETS/ARIMA 批量跑 |
+| `statsmodels` | SARIMAX、STL | 主力统计模型 |
+| `LightGBM` | 表格 ML | 特征工程后的强基线 |
+| `amazon-science/chronos-forecasting` | 零样本时序基础模型 | **CPU 可跑 Chronos-Bolt small**，做「基础模型 vs 经典模型」对照 |
+| `Nixtla/neuralforecast` | N-HiTS/PatchTST | 48 h 内不做，寒假可选 |
+| `unit8co/darts` / `sktime` | 统一 API | MVP 不引入，避免封装黑盒 |
 
-**明确不做**：Kafka、Spark、Flink、K8s、LangChain 黑盒封装、微服务拆分。数据量 2 万行，上了就是减分项，面试被问要能答出「吞吐、延迟、团队规模」三条理由。
+### 2.3 科研 benchmark：学评估，不学规模
+
+- `ClimateLearn`（NeurIPS 2023 D&B）：标准化数据集 + 模型 zoo + metrics，值得学「怎么设计公平对比」。
+- `WeatherBench2`：网格化中期天气预报评估，用 RMSE/ACC 等。
+- `earth2studio`：NVIDIA 的推理框架，面向业务化部署。
+
+**结论**：我们没有 TB 级网格数据，不该模仿它们的模型规模；但应模仿**评估纪律**（固定切分、基线、显著性、可复现）。
+
+### 2.4 LLM 数据分析：学产品形态，不学架构重
+
+`Vanna` 用 RAG 做 Text-to-SQL，`DB-GPT` 做 Agent 化数据助手，`WrenAI` 加语义层，`SQLBot` 中文生态好。
+**不足**：部署重、偏通用、领域评测弱。
+**我们的做法**：不做通用 Text-to-SQL，只做 **8 个气候领域只读工具 + DeepSeek function calling**，用 10–30 题评测证明可信度。
+
+---
+ 
+## 3. 定位与差异化
+
+**一句话**：把「全球温度异常 CSV」做成一个**能被陌生人 10 分钟跑通、能被面试官追问 30 分钟**的气候数据 + AI 项目。
+
+| 维度 | 学生项目 | 科研 benchmark | 通用库 | 我们 |
+| --- | --- | --- | --- | --- |
+| 数据管道/可复现 | ✗ | ✓（重） | ✗ | ✓ 轻量 |
+| 领域深度 | 浅 | 深（网格） | 无 | ✓ 多序列 + 协变量 |
+| 严谨回测 | ✗ | ✓ | 半 | ✓ rolling origin + DM |
+| 不确定性 | ✗ | ✓ | 半 | ✓ 区间 + 覆盖率 |
+| LLM/Agent | ✗ | ✗ | ✗ | ✓ 工具调用 + 小评测 |
+| 公网 Demo | 少数 | ✗ | ✗ | ✓ |
+| 工程化 | ✗ | 部分 | ✓ | ✓ 测试 + CI |
+
+**三条面试故事**（比「准确率 99%」值钱）：
+1. 用 md5 证明本地数据是 NOAA 官方快照，并设计幂等增量更新；
+2. 发现「深度学习不一定赢 SARIMAX-X」，用 DM 检验说明差异是否显著；
+3. Agent 在 10 题 gold set 上的工具准确率 / 引用率 / 拒答率。
+
+---
+
+## 4. 最终形态（48 h 版架构）
+
+```mermaid
+flowchart LR
+  A[NOAA CAG<br/>GISTEMP/CO2/ONI] --> B[采集适配器<br/>快照+校验]
+  B --> C[(DuckDB<br/>raw/staging/marts)]
+  C --> D[质量契约<br/>断月/值域/重复]
+  D --> E[统计分析<br/>STL/趋势/变点/极值]
+  E --> F[回测引擎<br/>rolling origin]
+  F --> G[6 个模型<br/>基线/GBDT/Chronos]
+  G --> H[Streamlit 4 页]
+  G --> I[DeepSeek Agent<br/>3-5 个工具]
+  C --> I
+  H --> J[公网部署<br/>HF Spaces / 魔搭]
+  I --> J
+```
+
+**数据流示例**：用户问「2023 年比 1950 年暖多少？」→ Agent 调 `query_range` → DuckDB → 计算差值 → 回答并标注数据来源与基准期。
+
+---
+
+## 5. 技术选型（48 h 版）
+
+| 层 | 选型 | 为什么 | 不选什么 |
+| --- | --- | --- | --- |
+| 语言/环境 | Python 3.12 + `uv` | 快、lock 可复现 | conda（慢、重） |
+| 数据处理 | pandas + **DuckDB** + Parquet | 2 万行用 DuckDB 足够；SQL 能力可写简历 | Spark/Kafka（数据量小，上了减分） |
+| 统计 | statsmodels + scipy + ruptures | STL/SARIMAX/MK 检验/变点 | 自己实现 |
+| ML | LightGBM | 小数据强、训练秒级 | 深度网络（无 GPU） |
+| 基础模型 | **Chronos-Bolt small（CPU）** | 零样本、无需训练、2026 热点 | TimesFM 大模型（内存吃不消） |
+| 回测 | 自研 ~150 行 | 面试重点，必须自己能讲 | sklearn 随机切分 |
+| LLM | **DeepSeek API**（30 元/月够用） | 中文强、便宜、OpenAI 兼容 | 本地 7B（无 GPU 太慢） |
+| 前端 | Streamlit + Plotly | 2 天出 Demo | Next.js（时间不够） |
+| 部署 | HuggingFace Spaces / 魔搭创空间 | 免费、有公网 URL | 自建服务器 |
+| 测试 | pytest + ruff + GH Actions | 最低成本工程信号 | 无 |
+| 追踪 | 先 CSV/JSON 记录，寒假上 MLflow | 省时间 | 一上来就上全家桶 |
+
+> **明确不做**：Kafka、Spark、Flink、K8s、LangChain 黑盒封装、微服务拆分。数据量 2 万行，架构要「轻」，并能解释为什么。
+
+---
 
 ## 6. 数据方案
 
-### 6.1 数据源
+### 6.1 数据源（均已验证可访问）
 
-| 数据 | 来源 | 频率 / 范围 | 用途 |
+| 数据 | 来源 | 频率/范围 | 用途 |
 | --- | --- | --- | --- |
-| 全球陆海异常 | NOAA CAG | 月，1850–2026-09 | 主目标 |
-| 全球陆地 / 海洋 | NOAA CAG | 月，1850–2026-09 | 多序列对比 |
-| 半球 / 纬度带 | NASA GISTEMP v4 | 月 / 年，1880– | 空间差异 |
+| 全球陆海异常 | NOAA CAG `globe/land_ocean` | 月，1850–2026-09 | 主目标 |
+| 全球陆地/海洋 | NOAA CAG `globe/land`、`globe/ocean` | 月，1850– | 多序列 |
+| 半球/纬度带 | NASA GISTEMP v4（NH/SH/ZonAnn） | 1880– | 多序列 |
 | CO₂ | NOAA GML Mauna Loa | 月，1958– | 协变量 |
 | ENSO | NOAA CPC ONI | 季，1950– | 协变量 |
-| 太阳黑子 | SILSO | 月，1700– | 弱协变量 |
+| 太阳黑子 | SILSO | 月，1700– | 协变量（弱） |
+
+> 全部公开数据；README 逐条注明来源、许可、访问日期。
 
 ### 6.2 表设计
 
-| 表 | 关键字段 | 说明 |
-| --- | --- | --- |
-| series | series_id、name、region、source、units、base_period | 序列元数据 |
-| observation | series_id、date、value、is_missing、flag | 月度观测 |
-| forecast_run | run_id、model、horizon、cutoff、params、git_sha | 一次回测 |
-| forecast | run_id、date、yhat、lo80、hi80、lo95、hi95 | 预测与区间 |
-| metrics | run_id、series_id、horizon、mase、rmse、crps、cov80 | 评估结果 |
+```sql
+series(series_id PK, name, region, area, source, units, base_period, license, retrieved_at)
+observation(series_id, date, value, is_missing, flag, PK(series_id,date))
+forecast_run(run_id PK, model, horizon, cutoff, params_json, git_sha, created_at)
+forecast(run_id, series_id, date, yhat, lo80, hi80, lo95, hi95)
+metrics(run_id, series_id, horizon, mase, rmse, mae, crps, cov80, cov95)
+```
 
-### 6.3 数据质量
+### 6.3 数据质量（要能讲出「拦住了什么」）
 
-- 表头、类型、单位、基准期契约。
-- 日期唯一且连续；值域检查；缺失标记检查。
-- 官方修订导致的历史值变化：保留快照 + 生成 diff 报告。
-- 每次更新输出 `data/quality_report.json`，不合格则中断。
+- 列名/类型/单位/基准期契约；日期唯一且连续；值域 `[-3, 3]`
+- 断月、重复、滞后回改（官方会修订历史值）→ 快照版本 + diff 报告
+- 1880 年前海洋覆盖稀疏 → 图表与结论必须标注不确定性
+- 每次 ingest 生成 `data/quality_report.json`，不合格则 CI 失败
 
-### 6.4 更新节奏
+---
 
-NOAA 每月中旬发布上月数据。用 GitHub Actions 每月定时跑一次 `scripts/update_data.py`，失败发通知；本地也可以手动跑。
+## 7. 建模与评估
 
-## 7. 分析与建模方案
+### 7.1 任务
 
-### 7.1 分析层
+- 预测**月度温度异常**（不是绝对温度），horizon `h ∈ {1,3,6,12,24}`
+- 序列：全球陆海 / 陆地 / 海洋 / 北半球 / 南半球
+- 协变量：CO₂（水平 + 12 月差分）、ONI、太阳黑子、月份 Fourier、趋势
+- **滚动 origin（walk-forward）**，≥24 个 cutoff；禁止随机切分
 
-- STL 分解（趋势 / 季节 / 残差）。
-- 年度、十年、滚动 12 月均值。
-- Mann-Kendall 趋势检验 + Theil-Sen 斜率与置信区间。
-- 变点检测（ruptures），定位升温加速的年份。
-- 极值分析：最暖 / 最冷月份、连续暖月长度。
-- 海陆对比、南北半球对比、季节差异。
-
-### 7.2 模型阶梯
+### 7.2 模型阶梯（48 h 内做 6 个）
 
 | 层级 | 模型 | 作用 |
 | --- | --- | --- |
 | L0 | Seasonal Naive、Drift | 必须打赢的下限 |
-| L1 | ETS 或 SARIMA | 经典统计基线 |
-| L2 | SARIMAX-X（CO₂ / ENSO） | 可解释主力 |
-| L3 | LightGBM（lag + rolling + Fourier + 协变量） | 表格 ML |
-| L4 | Chronos-Bolt 零样本 | 基础模型对照 |
+| L1 | ETS（或 SARIMA） | 经典统计基线 |
+| L2 | **SARIMAX-X**（CO₂/ENSO） | 可解释主力 |
+| L3 | **LightGBM**（lag + rolling + Fourier + 协变量） | 表格 ML |
+| L4 | **Chronos-Bolt 零样本** | 基础模型对照 |
 
-### 7.3 评估协议
+> 深度模型训练（N-HiTS/PatchTST）放到寒假，无 GPU 时性价比低。
 
-- 任务：预测月度温度异常，horizon 取 1、3、6、12、24。
-- 切分：滚动 origin（walk-forward），至少 20 个 cutoff，禁止随机切分。
-- 主指标：MASE(12)；辅助：RMSE、MAE。
-- 区间：CRPS、Winkler、80% / 95% 覆盖率。
-- 显著性：Diebold-Mariano 检验。
-- 消融：有无协变量、lookback 长度、训练窗长。
-- 防泄漏：标准化只用训练段、特征 shift 正确、超参不在测试段选。
+### 7.3 评估协议（项目灵魂）
 
-### 7.4 预期结论形态
+- 主指标 **MASE(12)**；辅以 RMSE/MAE；区间用 **CRPS / Winkler / 覆盖率**
+- 显著性：Diebold-Mariano 检验
+- 分 horizon、分序列、分时段（1850–1950 / 1950–2000 / 2000–）报告
+- 消融：协变量有无、lookback、训练窗长
+- 泄漏检查：标准化只用训练段、特征 shift 正确、超参不在测试段选
+- 产出：`reports/benchmark.md` + 3 张图（误差随 horizon、区间覆盖、DM p 值）
 
-h ≤ 3 时 ENSO 主导，LightGBM / SARIMAX-X 可能领先；h ≥ 12 时趋势和 CO₂ 主导，复杂模型优势消失；Chronos 零样本有竞争力但区间可能偏窄，覆盖率不足。**如果深度学习没赢，就写没赢，并解释原因——这比编数字更能打动面试官。**
+### 7.4 预期结论形态（诚实最重要）
 
-## 8. LLM 分析助手
+> h ≤ 3：ENSO 主导，LightGBM/SARIMAX-X 领先；h ≥ 12：趋势 + CO₂ 主导，复杂模型优势消失；Chronos 零样本有竞争力但区间偏窄、覆盖率不足 → 需校准。
 
-### 8.1 工具设计
+**如果 DL 没赢，就写「没赢」，并解释原因。这比编数字更能打动面试官。**
+
+---
+
+## 8. LLM 分析助手（48 h 轻量版）
+
+### 8.1 工具（先做 3 个，够用再加）
 
 | 工具 | 输入 | 输出 |
 | --- | --- | --- |
-| query_range | series_id、start、end | 月度序列 |
-| compute_trend | series_id、start、end | 斜率 + 置信区间 + MK p 值 |
-| forecast | series_id、horizon、model | 预测值 + 区间 |
-| compare_periods | series_id、period_a、period_b | 差值 + 显著性 |
-| search_documents | query | 报告片段 + 引用（寒假） |
+| `query_range` | series_id, start, end | 月度序列 |
+| `compute_trend` | series_id, start, end | 斜率 + CI + MK p 值 |
+| `forecast` | series_id, horizon, model | 预测值 + 区间 |
+| `compare_periods`（可选） | series_id, period_a, period_b | 差值 + 显著性 |
+| `search_documents`（寒假） | query | 报告片段 + 引用 |
 
 ### 8.2 实现要点
 
-- 手写 tool-calling loop（约 100 行），不用 LangChain 黑盒。
-- DeepSeek API：temperature=0、JSON Schema 校验、最多 5 步、超时重试。
-- 回答必须带数据来源、基准期、月份；查不到就明确说查不到。
-- 缓存 LLM 响应，30 元预算足够演示和评测。
+- 手写 tool-calling loop（约 100 行），不用 LangChain 黑盒
+- DeepSeek API：`temperature=0`、JSON Schema 校验、最多 5 步、超时与重试
+- 回答必须带「数据来源 + 基准期 + 月份」；查不到就说查不到
+- **缓存 LLM 响应**（30 元预算够用，但别浪费）
+- 评测：10 题 gold set（事实/趋势/预测/越界），统计工具选择准确率、答案正确率、拒答率
 
-### 8.3 评测
+> RAG（IPCC/NOAA 报告）放寒假做，避免 48 h 内两头不讨好。
 
-10 题 gold set：事实查询、趋势判断、预测、跨期对比、越界拒答。统计工具选择准确率、答案正确率、拒答正确率、平均步数与延迟。
+---
 
-## 9. 六周执行表
+## 9. 六周执行表（小时级）
 
-每周 8 小时，含约 1.5 小时学习。
+### Week 1（10.19–10.25）地基 + 数据管道 — 8 h
 
-| 周 | 主题 | 关键任务 | 周末产出 | 你要理解 |
-| --- | --- | --- | --- | --- |
-| 1 | 地基 + 数据管道 | 修环境、迁移采集脚本、DuckDB 建库、数据契约、README | `make data` 可复现；测试通过 | 为什么要 raw/staging/marts |
-| 2 | 统计分析 + SQL | STL、趋势检验、变点、极值；20 条 SQL | 6 张图 + 3 条结论 + sql/ 目录 | MASE 之外，趋势怎么检验 |
-| 3 | 回测 + 统计基线 | 回测引擎、Naive/ETS/SARIMAX-X、指标 | benchmark 表 v1 | 滚动 origin 为什么防泄漏 |
-| 4 | LightGBM + Chronos | 特征工程、GBDT、零样本、汇总 | 6 模型完整对比 | 零样本模型在做什么 |
-| 5 | Streamlit + 部署 | 四页应用、公网部署、英文 README | 公网 URL + 英文 brief | 前端如何读 DuckDB |
-| 6 | Agent + 包装 | DeepSeek 工具调用、10 题评测、视频 | 聊天页 + 评测表 + 简历 | function calling 的消息结构 |
+| 时长 | 任务 | 产出 |
+| --- | --- | --- |
+| 2 h | 删嵌套 git、重建 venv（uv）、`pyproject.toml`、ruff、pytest | 干净环境 |
+| 3 h | NOAA/GISTEMP/CO₂/ONI 下载器 + sha256 + 断月校验 + raw 快照 | `src/clmta/ingest/` |
+| 2 h | DuckDB 建库、staging/marts、数据字典 | `data/clmta.duckdb` |
+| 1 h | README 重写（现状/数据来源/快速开始） | 可读 README |
 
-### 9.1 如果掉队怎么砍
+- **验收**：新环境执行 `make data` 能从零复现 1850–2026；`make test` 全绿。
+- **要学**：DuckDB 基础 SQL（30 min/天）、pandas 读写与类型。
 
-- 第 3 周没完成：砍 ETS，只留 Naive 和 SARIMAX-X。
-- 第 4 周没完成：砍 Chronos，保留 LightGBM，把「基础模型对比」挪到寒假。
-- 第 5 周没完成：部署只做 Streamlit Community Cloud，英文 brief 用模板。
-- 第 6 周没完成：砍 Agent，把 20 条 SQL 和 benchmark 报告做深——数据分析岗同样买账。
+### Week 2（10.26–11.01）统计分析 — 8 h
+
+| 时长 | 任务 |
+| --- | --- |
+| 3 h | STL 分解、年度/十年均值、月度热力图、滚动窗口 |
+| 3 h | Mann-Kendall、Theil-Sen 斜率 + CI、变点检测（ruptures）、最暖/最冷 Top10 |
+| 2 h | 图表统一风格，notebook 整理成 `notebooks/01_eda.ipynb` |
+
+- **验收**：6 张核心图 + 3 条可引用结论（例：1980 年后升温速率约 X °C/十年）。
+- **要学**：STL 原理、MK 检验在干嘛（不用推公式，会解释 p 值即可）。
+
+### Week 3（11.02–11.08）回测框架 + 统计基线 — 8 h
+
+| 时长 | 任务 |
+| --- | --- |
+| 3 h | `backtest/runner.py`：rolling origin、多 horizon、MASE/RMSE/CRPS/覆盖率 |
+| 3 h | Seasonal Naive、Drift、ETS、SARIMAX-X（CO₂/ONI 外生变量） |
+| 2 h | `reports/benchmark.md` v1 + DM 检验 |
+
+- **验收**：同一份数据、5 个 cutoff 可复现；表里有 MASE 和覆盖率。
+- **要学**：MASE 为什么比 MAPE 好；SARIMAX 外生变量含义。
+
+### Week 4（11.09–11.15）LightGBM + Chronos — 8 h
+
+| 时长 | 任务 |
+| --- | --- |
+| 2 h | 特征：lag(1,2,3,6,12)、rolling mean/std、Fourier(月份)、CO₂/ONI |
+| 2 h | LightGBM 直接多步预测 + 特征重要性 |
+| 2 h | Chronos-Bolt small 零样本（CPU）+ 区间输出 |
+| 2 h | 汇总 6 模型、误差随 horizon 图、写结论 |
+
+- **验收**：benchmark 完整；能回答「谁在 h=1/6/12 赢，为什么」。
+- **要学**：梯度提升直觉；零样本模型在做什么。
+
+### Week 5（11.16–11.22）Streamlit + 部署 — 8 h
+
+| 时长 | 任务 |
+| --- | --- |
+| 4 h | 四页：趋势总览 / 分解与变点 / 模型对比 / 数据表 |
+| 2 h | 部署到 HuggingFace Spaces 或魔搭创空间（国内访问优先魔搭） |
+| 2 h | README 首屏：架构图、benchmark 表、GIF、Quickstart |
+
+- **验收**：公网 URL 能打开、能切序列、能看预测区间。
+- **要学**：Streamlit 基本组件与缓存。
+
+### Week 6（11.23–11.29）LLM 问答 + 包装 — 8 h
+
+| 时长 | 任务 |
+| --- | --- |
+| 2 h | DeepSeek function calling + 3 个工具 + 防幻觉规则 |
+| 2 h | Streamlit 聊天页 + 数据来源标注 |
+| 2 h | 10 题评测（缓存响应）+ 指标表 |
+| 2 h | 简历 bullet、3 分钟演示视频、技术博客大纲 |
+
+- **验收**：能问「2023 年比 1950 年暖多少」并给出正确数字、来源、基准期。
+- **要学**：function calling 的消息结构；如何写一条好的 system prompt。
+
+### 12 月：只复习，不排任务
+
+---
 
 ## 10. 交付物、简历与面试
 
 ### 10.1 三类硬交付
 
-1. 公网 Demo：Streamlit 四页 + 聊天页。
-2. 可复现仓库：README 首屏含架构图、benchmark 表、Quickstart、GIF、数据来源。
-3. benchmark 报告 + 2 分钟视频 + 一页英文 Project Brief。
+1. **公网 Demo**（Streamlit 4 页 + 聊天页）
+2. **可复现仓库**（README 首屏：架构图 / benchmark 表 / Quickstart / GIF / 数据来源）
+3. **benchmark 报告 + 3 分钟视频 + 技术博客大纲**
 
-### 10.2 中文简历 bullet（数字待实测）
+### 10.2 简历 bullet 模板（数字待实测）
 
 > **ClimateScope｜全球气候异常分析与预测平台**（个人项目，2026.10–2026.11）
-> - 基于 NOAA / GISTEMP / CO₂ / ENSO 构建月度气候数据管道（1850–2026，3 条序列），实现幂等增量更新、sha256 溯源与 10 项数据契约校验，数据准备从手工 2 小时降为一条命令；
-> - 设计 rolling-origin 回测框架，对比 6 个模型（Naive / ETS / SARIMAX-X / LightGBM / Chronos 零样本），以 MASE / CRPS / 区间覆盖率评估，SARIMAX-X 在 h=12 上较基线降低 X%；
-> - 用 DeepSeek function calling 实现气候问答助手（3 个只读工具），10 题评测集工具准确率 X%、拒答正确率 Y%；Streamlit 部署公网可访问。
+> - 基于 NOAA/GISTEMP/CO₂/ENSO 构建月度气候数据管道（1850–2026，5 序列），实现幂等增量更新与 10+ 项数据契约校验，数据准备从手工 2 h 降为 1 条命令；
+> - 设计 rolling-origin 回测框架，对比 6 个模型（Naive/ETS/SARIMAX-X/LightGBM/Chronos 零样本），以 MASE/CRPS/区间覆盖率评估，SARIMAX-X 在 h=12 上较基线降低 **X%**；
+> - 用 DeepSeek function calling 实现气候问答助手（3 个只读工具），10 题评测集工具准确率 **X%**、拒答正确率 **Y%**；Streamlit 部署公网可访问。
 
-### 10.3 英文简历 bullet（外企用）
+### 10.3 面试 8 问（提前写答案）
 
-> **ClimateScope — Global Climate Anomaly Analytics & Forecasting** (Personal Project, Oct–Nov 2026)
-> - Built a reproducible monthly climate data pipeline (NOAA / GISTEMP / CO₂ / ENSO, 1850–2026, 3 series) with idempotent incremental updates, SHA-256 provenance and 10 data-contract checks; cut data preparation from 2 hours to one command.
-> - Designed a rolling-origin backtesting framework comparing 6 models (Seasonal Naive, ETS, SARIMAX-X, LightGBM, zero-shot Chronos) with MASE, CRPS and prediction-interval coverage; SARIMAX-X reduced MASE by X% at h=12.
-> - Shipped a DeepSeek function-calling assistant (3 read-only tools) evaluated on a 10-question gold set (tool accuracy X%, refusal accuracy Y%); deployed the Streamlit demo publicly.
+1. 2100 个点为什么值得做预测？你的模型赢了吗？
+2. 如何保证没有数据泄漏？
+3. 为什么用 MASE 而不是 MAPE/R²？
+4. 温度异常非平稳，你怎么处理趋势？
+5. 预测区间怎么来？覆盖率怎么验证？
+6. Chronos 零样本为什么有效？预训练数据是否覆盖测试期？
+7. Agent 怎么防幻觉？评测集怎么设计？
+8. 为什么不用 Kafka/Spark？
 
-### 10.4 面试 10 问与答题要点
-
-1. **2100 个点为什么值得做预测？** 预测不是目的，展示评估协议和不确定性量化才是；同时用多序列和协变量让对比有意义。
-2. **怎么保证没有数据泄漏？** 滚动 origin、训练段内标准化、特征只用到 t 时刻、超参不在测试段选。
-3. **为什么用 MASE 而不是 MAPE / R²？** 温度异常接近 0，MAPE 会爆炸；MASE 可与季节性朴素基线比较，跨序列可读。
-4. **非平稳怎么处理？** 差分、去趋势、加协变量三种方案做消融，用回测结果说话。
-5. **预测区间怎么来？** 残差 bootstrap / 分位数模型 / conformal，报告覆盖率而不是只画区间。
-6. **Chronos 零样本为什么有效？** 大规模多领域预训练学到通用时序模式；但要讨论预训练语料是否覆盖测试期。
-7. **Agent 怎么防幻觉？** 工具只读、JSON Schema、回答必须带来源、查不到就拒答、10 题评测。
-8. **数据更新后模型怎么办？** 每月重跑回测，监控 MASE 与漂移，模型注册表记录版本。
-9. **为什么不用 Kafka / Spark？** 数据量 2 万行、月频更新，单机 DuckDB 足够；引入分布式只增加运维成本。
-10. **这个项目最难的地方？** 诚实评估（模型没赢）和数据质量（历史修订、早期观测稀疏）。
-
-### 10.5 英文自述模板（2 分钟）
-
-> I built ClimateScope, an end-to-end climate analytics project. I ingest monthly temperature anomalies from NOAA, validate them with data contracts, and store them in DuckDB. I compare statistical, machine-learning and zero-shot foundation models with a rolling-origin backtest, and report MASE, CRPS and interval coverage. I also built a small LLM assistant that answers questions by calling read-only tools, evaluated on a gold set. The hardest part was avoiding data leakage and being honest when deep learning did not beat a simple baseline.
+---
 
 ## 11. 风险与取舍
 
 | 风险 | 应对 |
 | --- | --- |
-| 每周只有 8 小时 | 只承诺周末产出；掉队按 9.1 砍功能 |
-| 没有 GPU | 不训练深度模型；Chronos-Bolt small 在 CPU 上跑 |
-| 30 元 API 超支 | 缓存响应、限制评测次数、只在演示时调用 |
-| 知识储备不足 | 每周 1.5 小时定向学习，先理解再写代码 |
-| 模型不涨点 | 诚实写结论，反而成为面试亮点 |
-| 数据修订 | 快照 + diff 报告 + 质量中断 |
-| 过度工程 | 每个技术选择写一条 ADR，拒绝分布式组件 |
+| 每周只有 8 h，进度掉队 | 每周只承诺「验收物」；掉队就砍 Week 6 的 LLM，保前 5 周 |
+| 没 GPU | 不训练深度模型；Chronos-Bolt small 在 CPU 上跑 |
+| 30 元 API 超支 | 缓存 + 限制评测次数 + 只在演示时调用 |
+| 知识储备不足 | 每周 1–2 h 定向学习，我负责讲清「为什么」而不是堆代码 |
+| DL 不涨点 | 诚实写结论，反而加分 |
+| 过度工程 | 每个技术选择写 1 条 ADR；不上分布式组件 |
+| 数据诚信 | 数据来源逐条标注；AI 辅助在 README 声明 |
 
-## 12. 寒假 v2 与后续
+### 明确不要做的三件事
 
-- RAG：IPCC AR6 SPM、NOAA 年报、中国气候公报，bge-m3 + pgvector + 引用。
-- Agent 评测扩到 30 题，增加 `search_documents`、`plot_series`。
-- MLflow 实验追踪 + Docker Compose + Evidently 漂移监控。
-- MCP Server：让 Claude / Cursor 直接查气候数据。
-- N-HiTS / PatchTST（Colab 免费 GPU）。
-- 项目 2：业务数据 + LLM 应用（电商 / 金融 / 本地生活任选），补齐业务分析叙事。
+1. 不抄教程改个名字（面试一问就露）；
+2. 不编指标（截图和数据对不上是硬伤）；
+3. 不堆技术栈（2 万行数据上 Kafka 是减分）。
 
-## 13. 待确认
+---
 
-1. 是否按 C 版开工？（默认：是）
-2. 部署选魔搭创空间还是 HuggingFace Spaces？（默认：魔搭，国内访问快）
-3. 第 6 周保留 Agent，还是换成更深的 SQL + 分析报告？（默认：保留 Agent，掉队则替换）
+## 12. 寒假 v2（可选，1–2 月）
 
-## 附录 A：数据字典与关键事实
+- RAG：IPCC AR6 SPM + NOAA 年报 + 中国气候公报，bge-m3 + pgvector + 引用
+- Agent 评测扩到 30 题；加 `search_documents`、`plot_series`
+- MLOps：MLflow 实验追踪 + Docker Compose + Evidently 漂移监控
+- MCP Server：让 Claude/Cursor 直接查气候数据
+- N-HiTS/PatchTST（Colab 免费 GPU）
+- 技术博客 + 投递暑期实习
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| Date | YYYYMM | 月份，如 202609 |
-| Departure from Average | float | 相对 1901–2000 基准期的温度异常（°C） |
+---
 
-- 文件：`data/data.csv`，2121 行，1850-01 ~ 2026-09。
-- 最近 12 个月均值：1.15 °C。
-- 2025 年：1.12 °C；2026 年 1–9 月：1.17 °C；2026-09：1.33 °C。
-- 最暖月份：2023-09（1.40 °C）。
-- 十年均值：1850s −0.10，1950s −0.02，1990s 0.39，2020s 1.06。
-- 1970–2026 线性趋势：约 +0.196 °C/十年。
+## 13. 待你确认
 
-## 附录 B：调研来源
+1. 这份 48 h 版的范围是否 OK？（尤其：**Week 6 的 LLM 问答**要不要保留，还是换成更扎实的分析报告？）
+2. Streamlit 部署选 **魔搭创空间**（国内快）还是 **HuggingFace Spaces**？
+3. 确认后我从 Week 1 开工：先删嵌套 git、重建环境、写数据管道；每周给你一份「本周做了什么 + 你要理解的 3 个点」。
 
-- NOAA CAG：https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series
-- NASA GISTEMP：https://data.giss.nasa.gov/gistemp/
-- NOAA GML CO₂：https://gml.noaa.gov/ccgg/trends/
-- NOAA CPC ONI：https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt
-- SILSO：https://www.sidc.be/SILSO/datafiles
-- ClimateLearn：https://github.com/aditya-grover/climate-learn
-- WeatherBench2：https://github.com/google-research/weatherbench2
-- earth2studio：https://github.com/NVIDIA/earth2studio
-- Chronos：https://github.com/amazon-science/chronos-forecasting
-- statsforecast：https://github.com/Nixtla/statsforecast
-- darts：https://github.com/unit8co/darts
-- sktime：https://github.com/sktime/sktime
-- Vanna：https://github.com/vanna-ai/vanna
-- DB-GPT：https://github.com/eosphoros-ai/DB-GPT
-- WrenAI：https://github.com/Canner/WrenAI
+---
 
-## 附录 C：术语表
+## 附：数据事实与链接
 
-- **MASE**：平均绝对误差除以季节性朴素基线的平均绝对误差，小于 1 表示优于基线。
-- **CRPS**：连续排名概率得分，评估概率预测的整体质量，越小越好。
-- **区间覆盖率**：真实值落在预测区间内的比例，80% 区间应接近 80%。
-- **rolling origin**：每次用截至某月的数据训练，预测未来 h 个月，再向前滚动，避免未来信息泄漏。
-- **DM 检验**：Diebold-Mariano 检验，判断两个模型预测误差差异是否显著。
-- **STL**：把序列分解为趋势、季节、残差三部分。
-- **Mann-Kendall**：非参数趋势检验，不假设数据服从正态分布。
-- **Theil-Sen**：稳健的斜率估计，对异常值不敏感。
-- **零样本预测**：预训练模型不做微调，直接对新序列预测。
-- **function calling**：让 LLM 以结构化参数调用外部工具，而不是凭空生成答案。
+- 本地数据 md5：`56b98213687172b413f796d5e2dcbf08`
+- NOAA CAG 全球陆海月异常：<https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series>
+- NASA GISTEMP v4：<https://data.giss.nasa.gov/gistemp/>
+- NOAA GML CO₂：<https://gml.noaa.gov/ccgg/trends/>
+- NOAA CPC ONI：<https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt>
+- SILSO：<https://www.sidc.be/SILSO/datafiles>
+- ClimateLearn：<https://github.com/aditya-grover/climate-learn>
+- WeatherBench2：<https://github.com/google-research/weatherbench2>
+- earth2studio：<https://github.com/NVIDIA/earth2studio>
+- Chronos：<https://github.com/amazon-science/chronos-forecasting>
+- statsforecast：<https://github.com/Nixtla/statsforecast>
+- darts：<https://github.com/unit8co/darts>
+- sktime：<https://github.com/sktime/sktime>
+- Vanna：<https://github.com/vanna-ai/vanna>
+- DB-GPT：<https://github.com/eosphoros-ai/DB-GPT>
+- WrenAI：<https://github.com/Canner/WrenAI>
