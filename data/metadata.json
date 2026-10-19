@@ -1,0 +1,42 @@
+{
+  "generated_by": "scripts/update_data.py",
+  "source": "NOAA NCEI Climate at a Glance",
+  "source_url": "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series",
+  "license": "Public domain (U.S. Government work); attribution required",
+  "fetched_at": "2026-10-19T08:24:06+00:00",
+  "series": {
+    "globe_land_ocean": {
+      "label": "Global land and ocean",
+      "url": "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/1/0/1850-2026/data.csv",
+      "raw_file": "data/raw/noaa_cag_globe_land_ocean_monthly_1850-2026.csv",
+      "sha256": "f9a78a7374a2152a614331b6bd9d59fbb03ce1b7ebef8aa81f68a19ace53ed6d",
+      "rows": 2121,
+      "first_month": "1850-01",
+      "last_month": "2026-09",
+      "base_period": "1901-2000",
+      "units": "Degrees Celsius"
+    },
+    "globe_land": {
+      "label": "Global land",
+      "url": "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land/1/0/1850-2026/data.csv",
+      "raw_file": "data/raw/noaa_cag_globe_land_monthly_1850-2026.csv",
+      "sha256": "e2a25c92ab9dfeb1551156325c5bc9fa7b2bb418f64ff53c3e475797996523a8",
+      "rows": 2121,
+      "first_month": "1850-01",
+      "last_month": "2026-09",
+      "base_period": "1901-2000",
+      "units": "Degrees Celsius"
+    },
+    "globe_ocean": {
+      "label": "Global ocean",
+      "url": "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/ocean/1/0/1850-2026/data.csv",
+      "raw_file": "data/raw/noaa_cag_globe_ocean_monthly_1850-2026.csv",
+      "sha256": "a73f9d2780eadc9ed34a4806ca06aa4c517d19fda050aa9f5af115a0856a1ee1",
+      "rows": 2121,
+      "first_month": "1850-01",
+      "last_month": "2026-09",
+      "base_period": "1901-2000",
+      "units": "Degrees Celsius"
+    }
+  }
+}
