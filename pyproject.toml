@@ -1,0 +1,31 @@
+[project]
+name = "clmta"
+version = "0.1.0"
+description = "ClimateScope: Global Climate Anomaly Analytics"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas",
+    "duckdb",
+    "pytest",
+    "ruff",
+]
+
+# ---------- Ruff 配置 ----------
+[tool.ruff]
+# 假设你的代码在 src/ 下，告诉 ruff 去这里找
+src = ["src"]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+# 开启 E（基础规范）、F（语法错误）、I（import排序）
+select = ["E", "F", "I"]
+# 忽略 E501（单行太长），避免写长 URL 或 SQL 时报错
+ignore = ["E501"]
+
+# ---------- Pytest 配置 ----------
+[tool.pytest.ini_options]
+# 告诉 pytest 去 tests/ 目录下找测试文件
+testpaths = ["tests"]
+# 测试文件名必须以 test_ 开头
+python_files = "test_*.py"
