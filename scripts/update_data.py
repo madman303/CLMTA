@@ -1,11 +1,12 @@
-import requests
-import pandas as pd
+import argparse
 import hashlib
 import json
-import argparse
-from pathlib import Path
 from datetime import datetime
 from io import StringIO
+from pathlib import Path
+
+import pandas as pd
+import requests
 
 DATA_DIR = Path("data")
 RAW_DIR = DATA_DIR / "raw"
@@ -29,11 +30,11 @@ def parse_and_validate(raw_text, series_name):
         raise ValueError("❌ 校验失败：基准期不是 1901-2000")
         
     # 2. 解析数据 (使用 comment="#"，自动忽略所有 # 开头的行，第一行非注释自动作为表头)
-    df = pd.read_csv(StringIO(raw_text), comment="#", header = "#", names=["Date", "Anomaly"])
+    df = pd.read_csv(StringIO(raw_text), comment="#", header = 0, names=["Date", "Anomaly"])
     
     # 3. 显式检查空值（替代 .dropna()）
     if df.isna().any().any():
-        raise ValueError(f"❌ 校验失败：包含空值 (NaN)")
+        raise ValueError("❌ 校验失败：包含空值 (NaN)")
         
     # 4. 基础行数与起始月校验
     if len(df) < 1000:

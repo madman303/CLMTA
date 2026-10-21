@@ -1,5 +1,5 @@
-import pytest
 import pandas as pd
+import pytest
 from scripts.update_data import parse_and_validate
 
 # 完全对齐真实 NOAA 的格式：3行注释 + 1行表头 + 数据
