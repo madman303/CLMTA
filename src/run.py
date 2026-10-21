@@ -10,5 +10,5 @@ PROJECT_ROOT = CURRENT_DIR.parent
 DATA_PATH = PROJECT_ROOT / "data" / "data.csv"
 
 #Read via absolute path
-df = pd.read_csv(DATA_PATH, skiprows = 4)
+df = pd.read_csv(DATA_PATH, comment = "#")
 print(f"读取成功！数据共有 {len(df)} 行，前 3 行如下：\n{df.head(3)}")
