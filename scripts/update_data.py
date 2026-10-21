@@ -29,7 +29,7 @@ def parse_and_validate(raw_text, series_name):
         raise ValueError("❌ 校验失败：基准期不是 1901-2000")
         
     # 2. 解析数据 (使用 comment="#"，自动忽略所有 # 开头的行，第一行非注释自动作为表头)
-    df = pd.read_csv(StringIO(raw_text), comment="#", names=["Date", "Anomaly"])
+    df = pd.read_csv(StringIO(raw_text), comment="#", header = "#", names=["Date", "Anomaly"])
     
     # 3. 显式检查空值（替代 .dropna()）
     if df.isna().any().any():
