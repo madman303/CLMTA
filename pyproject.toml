@@ -30,3 +30,4 @@ ignore = ["E501"]
 testpaths = ["tests"]
 # 测试文件名必须以 test_ 开头
 python_files = "test_*.py"
+pythonpath = ["."]
