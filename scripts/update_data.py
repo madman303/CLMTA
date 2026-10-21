@@ -1,11 +1,12 @@
-import requests
-import pandas as pd
+import argparse
 import hashlib
 import json
-import argparse
-from pathlib import Path
 from datetime import datetime
 from io import StringIO
+from pathlib import Path
+
+import pandas as pd
+import requests
 
 # basic configuration
 DATA_DIR = Path("data")
