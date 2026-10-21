@@ -7,4 +7,5 @@ test:
 	uv run pytest
 
 data:
-	@echo "==> Data script placeholder"
+	@echo "==> Updating NOAA CAG data..."
+	uv run python scripts/update_data.py

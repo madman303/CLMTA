@@ -1,204 +1,147 @@
 #!/usr/bin/env python3
-"""Update CLMTA climate series from NOAA NCEI Climate at a Glance.
-
-Design goals:
-- Standard library only: runs even before the project environment exists.
-- Idempotent: re-running produces the same files (network permitting).
-- Auditable: keeps the raw bytes, sha256, retrieval time and row count.
-- Safe: validates schema, contiguity, value range before overwriting data/data.csv.
-
-Usage:
-    python scripts/update_data.py            # fetch latest and update data/
-    python scripts/update_data.py --dry-run  # validate only, write nothing
-"""
+"""Download and validate the NOAA CAG global land-ocean temperature series."""
 
 from __future__ import annotations
 
-import argparse
 import csv
 import hashlib
-import json
-import sys
-import time
-import urllib.error
+import io
+import re
+import tempfile
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
-BASE_URL = (
-    "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance"
-    "/global/time-series"
+OUTPUT_FILE = DATA_DIR / "data.csv"
+URL = (
+    "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/"
+    "global/time-series/globe/land_ocean/1/0/1850-2026/data.csv"
 )
-# series_id -> (path segment, human label)
-SERIES = {
-    "globe_land_ocean": ("globe/land_ocean", "Global land and ocean"),
-    "globe_land": ("globe/land", "Global land"),
-    "globe_ocean": ("globe/ocean", "Global ocean"),
-}
-HEADER_PREFIX = "# Title:"
-VALUE_COLUMN = "Departure from Average"
-MIN_VALUE, MAX_VALUE = -4.0, 4.0
+EXPECTED_BASE_PERIOD = "1901-2000"
+EXPECTED_FIELDS = ["Date", "Departure from Average"]
 
 
-def log(message: str) -> None:
-    print(f"[update_data] {message}", flush=True)
+def download() -> bytes:
+    request = urllib.request.Request(
+        URL,
+        headers={"User-Agent": "CLMTA-data-updater/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return response.read()
 
 
-def sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def sha256(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
 
 
-def fetch(url: str, retries: int = 3, timeout: int = 60) -> bytes:
-    last_error: Exception | None = None
-    for attempt in range(1, retries + 1):
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": "CLMTA-data-bot/0.1 (educational project)"},
+def subtract_months(year: int, month: int, months: int) -> tuple[int, int]:
+    month_index = year * 12 + month - 1 - months
+    return month_index // 12, month_index % 12 + 1
+
+
+def parse_and_validate(payload: bytes, today: date) -> list[list[str]]:
+    text = payload.decode("utf-8-sig")
+    if not re.search(
+        rf"Base Period\s*:\s*{re.escape(EXPECTED_BASE_PERIOD)}\b",
+        text,
+        re.IGNORECASE,
+    ):
+        raise ValueError(
+            f"invalid or missing base period; expected {EXPECTED_BASE_PERIOD}"
         )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                if response.status != 200:
-                    raise RuntimeError(f"HTTP {response.status}")
-                return response.read()
-        except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
-            last_error = exc
-            if attempt < retries:
-                wait = 2**attempt
-                log(f"  retry {attempt}/{retries - 1} in {wait}s ({exc})")
-                time.sleep(wait)
-    raise RuntimeError(f"failed to fetch {url}: {last_error}")
 
-
-def parse(text: str) -> tuple[list[tuple[int, int, float]], dict[str, str]]:
-    """Return (year, month, value) rows plus the '#' metadata header."""
     lines = text.splitlines()
-    meta: dict[str, str] = {}
-    for line in lines:
-        if not line.startswith("#"):
-            continue
-        body = line.lstrip("#").strip()
-        if ":" in body:
-            key, _, value = body.partition(":")
-            meta[key.strip()] = value.strip().strip('"')
-    data_lines = [line for line in lines if line and not line.startswith("#")]
-    reader = csv.DictReader(data_lines)
-    if reader.fieldnames is None or reader.fieldnames[0] != "Date":
-        raise ValueError(f"unexpected columns: {reader.fieldnames}")
+    header = ",".join(EXPECTED_FIELDS)
+    header_index = next(
+        (index for index, line in enumerate(lines[:5]) if line.strip() == header),
+        None,
+    )
+    if header_index is None or header_index == len(lines) - 1:
+        raise ValueError("downloaded CSV has no data after its metadata header")
 
-    rows: list[tuple[int, int, float]] = []
+    reader = csv.DictReader(io.StringIO("\n".join(lines[header_index:])))
+    if reader.fieldnames != EXPECTED_FIELDS:
+        raise ValueError(
+            f"unexpected CSV columns: {reader.fieldnames!r}; "
+            f"expected {EXPECTED_FIELDS!r}"
+        )
+
+    rows: list[list[str]] = []
+    previous_month: tuple[int, int] | None = None
     for record in reader:
         raw_date = (record.get("Date") or "").strip()
-        raw_value = (record.get(VALUE_COLUMN) or "").strip()
-        if len(raw_date) != 6 or not raw_date.isdigit():
-            raise ValueError(f"bad date: {raw_date!r}")
+        value = (record.get("Departure from Average") or "").strip()
+        if not re.fullmatch(r"\d{6}", raw_date):
+            raise ValueError(f"invalid date value: {raw_date!r}")
         year, month = int(raw_date[:4]), int(raw_date[4:])
-        value = float(raw_value)
         if not 1 <= month <= 12:
-            raise ValueError(f"bad month: {raw_date!r}")
-        if value == -999:
-            raise ValueError(f"missing-value sentinel found at {raw_date}")
-        if not MIN_VALUE <= value <= MAX_VALUE:
-            raise ValueError(f"value out of range at {raw_date}: {value}")
-        rows.append((year, month, value))
+            raise ValueError(f"invalid month in date: {raw_date!r}")
+        if not value:
+            raise ValueError(f"missing temperature anomaly at {raw_date}")
 
-    if len(rows) < 1000:
-        raise ValueError(f"suspiciously few rows: {len(rows)}")
+        current_month = (year, month)
+        if previous_month is not None:
+            expected_month = subtract_months(*current_month, 1)
+            if previous_month != expected_month:
+                raise ValueError(
+                    f"non-contiguous dates: {previous_month[0]:04d}"
+                    f"{previous_month[1]:02d} -> {raw_date}"
+                )
+        previous_month = current_month
+        rows.append([raw_date, value])
 
-    expected = []
-    year, month = rows[0][0], rows[0][1]
-    last_year, last_month = rows[-1][0], rows[-1][1]
-    while (year, month) <= (last_year, last_month):
-        expected.append((year, month))
-        month += 1
-        if month == 13:
-            year, month = year + 1, 1
-    actual = [(y, m) for y, m, _ in rows]
-    if actual != expected:
-        missing = sorted(set(expected) - set(actual))[:5]
-        duplicated = len(actual) - len(set(actual))
-        raise ValueError(f"non-contiguous series, missing={missing}, dup={duplicated}")
+    if not rows:
+        raise ValueError("CSV contains no data rows")
 
-    return rows, meta
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dry-run", action="store_true", help="validate without writing")
-    args = parser.parse_args()
-
-    end_year = datetime.now(timezone.utc).year
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Keep the superseded snapshot for provenance (never delete source data).
-    # This must happen before data/data.csv is overwritten.
-    legacy = DATA_DIR / "data.csv"
-    if legacy.exists() and not args.dry_run:
-        legacy_bytes = legacy.read_bytes()
-        legacy_rows, _ = parse(legacy_bytes.decode("utf-8-sig"))
-        archive = (
-            RAW_DIR
-            / f"noaa_cag_globe_land_ocean_monthly_1850-{legacy_rows[-1][0]}.csv"
+    latest_year, latest_month = map(int, (rows[-1][0][:4], rows[-1][0][4:]))
+    minimum_year, minimum_month = subtract_months(today.year, today.month, 3)
+    if (latest_year, latest_month) < (minimum_year, minimum_month):
+        raise ValueError(
+            f"data is stale: latest month is {rows[-1][0]}, "
+            f"which is earlier than {minimum_year:04d}{minimum_month:02d}"
         )
-        if not archive.exists():
-            archive.write_bytes(legacy_bytes)
-            log(f"archived previous snapshot -> {archive.relative_to(ROOT)}")
+    return rows
 
-    manifest: dict[str, dict] = {
-        "generated_by": "scripts/update_data.py",
-        "source": "NOAA NCEI Climate at a Glance",
-        "source_url": BASE_URL,
-        "license": "Public domain (U.S. Government work); attribution required",
-        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "series": {},
-    }
 
-    for series_id, (path, label) in SERIES.items():
-        url = f"{BASE_URL}/{path}/1/0/1850-{end_year}/data.csv"
-        log(f"fetching {label}: {url}")
-        payload = fetch(url)
-        text = payload.decode("utf-8-sig")
-        rows, meta = parse(text)
+def write_standard_csv(rows: list[list[str]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="",
+            dir=DATA_DIR,
+            prefix=".data-",
+            suffix=".csv",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            writer = csv.writer(temporary, lineterminator="\n")
+            writer.writerow(EXPECTED_FIELDS)
+            writer.writerows(rows)
+        temporary_path.replace(OUTPUT_FILE)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
-        first = f"{rows[0][0]}-{rows[0][1]:02d}"
-        last = f"{rows[-1][0]}-{rows[-1][1]:02d}"
-        raw_name = f"noaa_cag_{series_id}_monthly_1850-{rows[-1][0]}.csv"
-        log(f"  {len(rows)} rows, {first} .. {last}, base={meta.get('Base Period')}")
 
-        if not args.dry_run:
-            (RAW_DIR / raw_name).write_bytes(payload)
-            if series_id == "globe_land_ocean":
-                (DATA_DIR / "data.csv").write_bytes(payload)
+def main() -> None:
+    today = date.today()
+    payload = download()
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    raw_file = RAW_DIR / f"land_ocean_{today:%Y%m%d}.csv"
+    raw_file.write_bytes(payload)
 
-        manifest["series"][series_id] = {
-            "label": label,
-            "url": url,
-            "raw_file": f"data/raw/{raw_name}",
-            "sha256": sha256(payload),
-            "rows": len(rows),
-            "first_month": first,
-            "last_month": last,
-            "base_period": meta.get("Base Period"),
-            "units": meta.get("Units", "Degrees Celsius"),
-        }
-
-    # Keep the superseded snapshot for provenance (never delete source data).
-    if args.dry_run:
-        log("dry-run: validation passed, nothing written")
-        return 0
-
-    (DATA_DIR / "metadata.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    log(f"wrote data/data.csv and data/metadata.json ({len(manifest['series'])} series)")
-    return 0
+    digest = sha256(payload)
+    print(f"sha256: {digest}")
+    rows = parse_and_validate(payload, today)
+    write_standard_csv(rows)
+    print("更新成功")
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except Exception as exc:  # noqa: BLE001 - CLI entry point
-        log(f"ERROR: {exc}")
-        sys.exit(1)
+    main()
