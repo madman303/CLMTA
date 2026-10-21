@@ -8,6 +8,7 @@ dependencies = [
     "duckdb",
     "pytest",
     "ruff",
+    "requests>=2.34.2",
 ]
 
 # ---------- Ruff 配置 ----------
