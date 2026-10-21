@@ -28,7 +28,7 @@ def parse_and_validate(raw_text, series_name):
         raise ValueError("❌ 校验失败：基准期不是 1901-2000")
         
     # 2. 解析数据
-    df = pd.read_csv(StringIO(raw_text), skiprows=4, names=["Date", "Anomaly"]).dropna()
+    df = pd.read_csv(StringIO(raw_text), skiprows=4, header = 0,names=["Date", "Anomaly"]).dropna()
     
     # 3. 基础行数与起始月校验
     if len(df) < 1000:

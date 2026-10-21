@@ -1,5 +1,5 @@
-import pytest
 import pandas as pd
+import pytest
 from scripts.update_data import parse_and_validate
 
 # 动态生成一段合法的长数据，满足 >= 1000 行，且最新月份在 90 天内
