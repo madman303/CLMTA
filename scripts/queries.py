@@ -1,30 +1,63 @@
+"""Example analytical queries against data/clmta.duckdb."""
+
+from pathlib import Path
+
 import duckdb
-con = duckdb.connect("data/clmta.duckdb")
 
-# 核心 SQL 1：最近的全球陆海温度异常是多少？
-print("=== 最近 3 个月全球温度 ===")
-print(con.execute("""
-    SELECT date_int, Anomaly 
-    FROM mart_monthly_anomaly 
-    WHERE region = 'Land_Ocean' 
-    ORDER BY obs_date DESC LIMIT 3
-""").df())
+ROOT = Path(__file__).resolve().parents[1]
+DB_PATH = ROOT / "data" / "clmta.duckdb"
 
-# 核心 SQL 2：2023年是有记录以来最热的年份吗？（看前5名）
-print("\n=== 最热年份 Top 5 ===")
-print(con.execute("""
-    SELECT year, ROUND(AVG(Anomaly), 2) as avg_temp
-    FROM mart_monthly_anomaly 
-    WHERE region = 'Land_Ocean' 
-    GROUP BY year 
-    ORDER BY avg_temp DESC LIMIT 5
-""").df())
 
-# 核心 SQL 3：陆地 vs 海洋 近10年的平均升温差异
-print("\n=== 2015-2024年 陆地与海洋平均温度 ===")
-print(con.execute("""
-    SELECT region, ROUND(AVG(Anomaly), 2) as avg_temp
-    FROM mart_monthly_anomaly 
-    WHERE year >= 2015 AND region IN ('Land', 'Ocean')
-    GROUP BY region
-""").df())
+def main() -> None:
+    if not DB_PATH.exists():
+        raise SystemExit(f"database not found: {DB_PATH}; run `make db` first")
+
+    con = duckdb.connect(str(DB_PATH), read_only=True)
+    try:
+        print("=== 最近 3 个月全球温度 ===")
+        print(
+            con.execute(
+                """
+                SELECT date_int, anomaly
+                FROM marts.monthly_anomaly
+                WHERE series = 'land_ocean'
+                ORDER BY obs_date DESC
+                LIMIT 3
+                """
+            ).df()
+        )
+
+        print("\n=== 最热年份 Top 5（只统计 12 个月的完整年份）===")
+        print(
+            con.execute(
+                """
+                SELECT year, ROUND(AVG(anomaly), 2) AS avg_anomaly
+                FROM marts.monthly_anomaly
+                WHERE series = 'land_ocean'
+                GROUP BY year
+                HAVING COUNT(*) = 12
+                ORDER BY avg_anomaly DESC
+                LIMIT 5
+                """
+            ).df()
+        )
+
+        print("\n=== 2015-2024 年 陆地 vs 海洋 ===")
+        print(
+            con.execute(
+                """
+                SELECT series, ROUND(AVG(anomaly), 2) AS avg_anomaly
+                FROM marts.monthly_anomaly
+                WHERE year BETWEEN 2015 AND 2024
+                  AND series IN ('land', 'ocean')
+                GROUP BY series
+                ORDER BY series
+                """
+            ).df()
+        )
+    finally:
+        con.close()
+
+
+if __name__ == "__main__":
+    main()
