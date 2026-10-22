@@ -9,3 +9,6 @@ test:
 data:
 	@echo "==> Updating NOAA CAG data..."
 	uv run python scripts/update_data.py
+
+db:
+	uv run python scripts/build_db.py
