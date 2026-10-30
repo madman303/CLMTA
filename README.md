@@ -49,7 +49,7 @@ make test
 
 ### 4. 滚动回测预测对比 (Rolling-Origin Forecast)
 ![Forecast Comparison](outputs/figures/forecast_comparison.png)
-构建了 Rolling-Origin 回测框架。对比发现，季节性朴素模型（Seasonal Naive）因为无法捕捉最新趋势而失效；SARIMAX 模型能够很好地捕捉趋势与季节性，并将真实值包裹在 80% 的预测区间内。
+构建了 Rolling-Origin 回测框架，对比了季节性朴素、Drift、SARIMAX 和 LightGBM。结果显示，在 24 个月的长期预测中，SARIMAX 更好地捕捉了季节性波动和置信区间，而 LightGBM 由于递归预测的误差累积，表现出过度平滑的现象。
 
 ## 项目结构与技术栈
 

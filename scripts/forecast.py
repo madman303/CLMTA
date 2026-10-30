@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
+import lightgbm as lgb
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -15,6 +16,14 @@ FIGURE_PATH = Path("outputs/figures/forecast_comparison.png")
 TEST_START = pd.Timestamp("2024-10-01")
 TEST_END = pd.Timestamp("2026-09-01")
 SEASONAL_PERIOD = 12
+FEATURE_COLUMNS = [
+    "lag_1",
+    "lag_3",
+    "lag_6",
+    "lag_12",
+    "rolling_mean_12",
+    "month",
+]
 
 
 def get_data() -> pd.DataFrame:
@@ -112,18 +121,64 @@ def sarimax_forecast(
     return mean, lower_80, upper_80, lower_95, upper_95
 
 
+def build_features(series: pd.Series) -> pd.DataFrame:
+    """Build lag, rolling-mean, and calendar features without forward filling."""
+    features = pd.DataFrame(index=series.index)
+    features["lag_1"] = series.shift(1)
+    features["lag_3"] = series.shift(3)
+    features["lag_6"] = series.shift(6)
+    features["lag_12"] = series.shift(12)
+    features["rolling_mean_12"] = series.shift(1).rolling(12).mean()
+    features["month"] = series.index.month
+    return features
+
+
+def train_lightgbm(train: pd.Series) -> lgb.LGBMRegressor:
+    """Fit LightGBM on features derived only from the training history."""
+    features = build_features(train)
+    training = features.assign(target=train).dropna()
+    model = lgb.LGBMRegressor(
+        objective="regression",
+        n_estimators=200,
+        learning_rate=0.03,
+        num_leaves=15,
+        max_depth=5,
+        random_state=42,
+        verbosity=-1,
+    )
+    model.fit(training[FEATURE_COLUMNS], training["target"])
+    return model
+
+
+def lightgbm_forecast(
+    model: lgb.LGBMRegressor,
+    history: pd.Series,
+    timestamp: pd.Timestamp,
+) -> float:
+    """Predict one month from a history that may contain prior predictions."""
+    series = pd.concat([history, pd.Series(index=[timestamp], dtype=float)])
+    feature_row = build_features(series).loc[[timestamp], FEATURE_COLUMNS]
+    return float(model.predict(feature_row)[0])
+
+
 def rolling_backtest(
     train: pd.Series,
     test: pd.Series,
 ) -> pd.DataFrame:
     """Run one-step-ahead rolling-origin predictions across the test set."""
     history = train.copy()
+    lightgbm_model = train_lightgbm(train)
     predictions: list[dict[str, float | pd.Timestamp]] = []
 
     for timestamp, actual in test.items():
         seasonal_naive = seasonal_naive_forecast(history)
         drift = drift_forecast(history)
         sarimax = sarimax_forecast(history)
+        lightgbm_prediction = lightgbm_forecast(
+            lightgbm_model,
+            history,
+            timestamp,
+        )
         predictions.append(
             {
                 "obs_date": timestamp,
@@ -135,6 +190,7 @@ def rolling_backtest(
                 "sarimax_upper_80": sarimax[2],
                 "sarimax_lower_95": sarimax[3],
                 "sarimax_upper_95": sarimax[4],
+                "lightgbm": lightgbm_prediction,
             }
         )
         history.loc[timestamp] = actual
@@ -155,6 +211,11 @@ def rmse(actual: pd.Series, predicted: pd.Series) -> float:
     return float(np.sqrt(((actual - predicted) ** 2).mean()))
 
 
+def mae(actual: pd.Series, predicted: pd.Series) -> float:
+    """Calculate mean absolute error."""
+    return float((actual - predicted).abs().mean())
+
+
 def evaluate(
     predictions: pd.DataFrame,
     training: pd.Series,
@@ -164,6 +225,7 @@ def evaluate(
         "Seasonal Naive": "seasonal_naive",
         "Drift": "drift",
         "SARIMAX": "sarimax",
+        "LightGBM": "lightgbm",
     }
     results = []
     actual = predictions["actual"]
@@ -174,6 +236,7 @@ def evaluate(
                 "model": model_name,
                 "MASE": mase(actual, forecast, training),
                 "RMSE": rmse(actual, forecast),
+                "MAE": mae(actual, forecast),
             }
         )
     return pd.DataFrame(results).set_index("model")
@@ -201,6 +264,12 @@ def plot_results(predictions: pd.DataFrame) -> None:
         predictions["sarimax"],
         label="SARIMAX",
         color="tab:blue",
+    )
+    axis.plot(
+        predictions.index,
+        predictions["lightgbm"],
+        label="LightGBM",
+        color="purple",
     )
     axis.fill_between(
         predictions.index,
