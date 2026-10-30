@@ -37,6 +37,13 @@ make query
 
 也可以运行 `make pipeline` 一次完成 `data` + `db`。
 
+## 项目文档
+
+- [项目企划书（PDF）](docs/ClimateScope-项目企划书-v1.pdf)
+- [项目企划书（Word）](docs/ClimateScope-项目企划书-v1.docx)
+- [数据字典](docs/data_dictionary.md)
+- [数据平台架构图](docs/architecture-data.png)
+
 ## 数据仓库
 
 `make db` 会构建三层结构：
