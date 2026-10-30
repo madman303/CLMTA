@@ -16,7 +16,17 @@ dependencies = [
     "ruptures>=1.1.9",
     "matplotlib>=3.8.0",
     "seaborn>=0.13.0",
+    "chronos-forecasting>=2.3.2",
+    "torch>=2.2",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 # ---------- Ruff 配置 ----------
 [tool.ruff]
