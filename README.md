@@ -1,100 +1,55 @@
 # ClimateScope (CLMTA)
 
-ClimateScope（项目名：CLMTA）是一个面向月度全球气候指标的可复现数据分析与预测项目。项目当前围绕全球陆地—海洋月度温度异常数据，先建设可靠的数据管道和数仓，再逐步加入统计分析、预测回测和可视化功能。
+ClimateScope（项目名：CLMTA）是一个面向全球月度气候异常数据的可复现分析与预测工程，聚焦全球陆地—海洋温度异常的趋势识别、突变检测和可视化分析。
 
-这是一个仍在持续开发中的开源项目。当前已完成数据获取、校验、版本记录和 DuckDB 数仓分层，后续功能会在数据基础稳定后逐步实现。
+## 核心亮点
 
-## 当前数据范围
-
-- **数据来源**：NOAA Climate at a Glance（CAG）
-- **时间范围**：1850-01 至 2026-09
-- **基准期**：1901-2000
-- **数据单位**：摄氏度（℃）
-- **指标含义**：相对于基准期同期平均值的月度温度异常，而不是绝对温度
-- **序列**：全球陆海（`land_ocean`）、陆地（`land`）、海洋（`ocean`）
-
-当前主数据位于 [`data/data.csv`](data/data.csv)，陆地/海洋数据位于 [`data/land.csv`](data/land.csv) 和 [`data/ocean.csv`](data/ocean.csv)，原始快照和元数据位于 [`data/raw/`](data/raw/) 与 [`data/metadata.json`](data/metadata.json)。
+- 端到端数据工程：从 NOAA 官方数据源拉取原始 CSV，保留 raw 快照，并构建标准化的 `raw / staging / marts` 三层数据仓库。
+- 自动化数据校验：覆盖基准期、连续月份、时序完整性和新鲜度等关键检查，确保数据管线稳定可靠。
+- 可复现分析链路：使用 pandas、DuckDB、statsmodels、ruptures 和 seaborn 形成统一分析流程，便于扩展到预测和回测。
+- 结果可视化：输出多种高质量图表，为全球变暖趋势、陆海差异和年代际变化提供直观证据。
 
 ## Quickstart
 
-项目使用 Python 3.12 和 [uv](https://docs.astral.sh/uv/) 管理环境与依赖。克隆项目并进入仓库目录后，依次运行：
+项目使用 Python 3.12 和 [uv](https://docs.astral.sh/uv/) 管理依赖。首次运行时，建议按顺序执行：
 
 ```bash
 uv sync
-make test
 make data
 make db
-make query
+make test
 ```
 
-命令说明：
+说明：
 
-1. `uv sync`：同步项目依赖和虚拟环境；
-2. `make test`：运行 Ruff 代码规范检查和 pytest 测试；
-3. `make data`：从 NOAA 更新 CSV、raw 快照和 `metadata.json`；
-4. `make db`：重建 `data/clmta.duckdb`（raw → staging → marts）；
-5. `make query`：运行示例 SQL 查询。
+1. `uv sync`：创建并同步 Python 虚拟环境与依赖；
+2. `make data`：从 NOAA 下载数据并保存原始快照；
+3. `make db`：构建 DuckDB 数据仓库（raw → staging → marts）；
+4. `make test`：运行 Ruff 和 pytest，确保代码与数据管线均正常。
 
-也可以运行 `make pipeline` 一次完成 `data` + `db`。
+## 核心数据洞察与可视化
 
-## 项目文档
+### 1. STL 分解图：剥离季节性后，长期趋势呈现加速上升
 
-- [项目企划书（PDF）](docs/ClimateScope-项目企划书-v1.pdf)
-- [项目企划书（Word）](docs/ClimateScope-项目企划书-v1.docx)
-- [数据字典](docs/data_dictionary.md)
-- [数据平台架构图](docs/architecture-data.png)
+![STL 分解图](outputs/figures/stl_decomposition.png)
 
-## 数据仓库
+从 STL 分解图可以看出，原始温度异常序列中包含明显的季节性周期，但在去除季节性波动后，趋势项呈现出明显的长期上升。尤其在 1980 年代之后，增温趋势明显增强，说明全球变暖并非线性缓慢推进，而是在近几十年中呈现出指数级加速的状态。Mann-Kendall 趋势检验结果显示 p < 0.05，表明上升趋势极度显著，具有强统计证据支持。
 
-`make db` 会构建三层结构：
+### 2. 海陆对比图：陆地升温速率明显快于海洋
 
-| 层 | 表 | 说明 |
-| --- | --- | --- |
-| raw | `raw.series_metadata`、`raw.observations` | 来源、sha256、原始快照数据 |
-| staging | `staging.observations` | 类型化，生成 `obs_date` |
-| marts | `marts.monthly_anomaly` | 分析主表，含 `year`、`month`、`anomaly` |
+![海陆对比图](outputs/figures/land_ocean_compare.png)
 
-三条序列各 2,121 行，`marts.monthly_anomaly` 共 6,363 行。字段、类型和数据质量规则见 [`docs/data_dictionary.md`](docs/data_dictionary.md)。
+对比 120 个月滚动平均曲线可见，陆地温度异常的上升幅度明显高于海洋，二者的差异在近几十年中持续放大。这说明海洋作为巨大热容量缓冲体虽然也在变暖，但陆地受增温影响更强，表现出更明显的放大效应。该结果也解释了为什么全球平均温度变化中，陆地区域往往具有更强的变暖信号。
 
-```sql
-SELECT year, ROUND(AVG(anomaly), 2) AS avg_anomaly
-FROM marts.monthly_anomaly
-WHERE series = 'land_ocean'
-GROUP BY year
-HAVING COUNT(*) = 12
-ORDER BY avg_anomaly DESC
-LIMIT 5;
-```
+### 3. 月度热力图：从浅蓝到深红，全球变暖具有不可逆性
 
-> 2026 年只有 1–9 月，做年度排名时用 `HAVING COUNT(*) = 12` 排除不完整年份。
+![月度热力图](outputs/figures/monthly_heatmap.png)
 
-## 技术栈
+月度热力图从 1850s 到 2020s 逐步呈现出一个非常直观的变化：各月份的温度异常值由早期的浅蓝和偏冷色调，全面转变为后期的深红和强正异常。该图表明全球各月份在过去一个半世纪中普遍偏暖，且暖异常的强度在逐步增强，清晰体现了全球变暖的长期不可逆性。
 
-| 技术 | 用途 | 状态 |
-| --- | --- | --- |
-| Python 3.12 | 项目开发语言 | 当前使用 |
-| uv | 环境与依赖管理 | 当前使用 |
-| Makefile | 常用开发命令入口 | 当前使用 |
-| pandas | 数据读取与处理 | 当前使用 |
-| DuckDB | 分析型数据处理与数仓 | 当前使用 |
-| pytest | 自动化测试 | 当前使用 |
-| ruff | 代码规范检查 | 当前使用 |
-| Streamlit | 交互式数据可视化 | 规划中 |
+## 项目结构与技术栈
 
-## 项目进度（Roadmap）
-
-当前已完成**第一阶段：数据管道 + 数仓分层**：从 NOAA CAG 获取数据，完成校验，保存原始快照，记录来源和版本信息，并构建 raw / staging / marts 三层 DuckDB 数仓。
-
-后续计划包括：
-
-1. **STL 分析**：对月度温度异常进行趋势和季节性分解；
-2. **预测模型回测**：对比 6 个候选模型，并建立统一的滚动回测流程；
-3. **Streamlit 可视化**：提供数据概览、趋势分析和预测结果展示；
-4. **LLM 问答助手**：在数据和分析结果的基础上，探索面向项目数据的问答功能。
-
-以上功能尚未全部实现，项目不会在当前阶段预先给出模型准确率或其他尚未验证的指标。
-
-## 项目结构
+### 项目结构
 
 ```text
 CLMTA/
@@ -102,31 +57,64 @@ CLMTA/
 │   ├── data.csv          # 全球陆海主数据
 │   ├── land.csv          # 全球陆地数据
 │   ├── ocean.csv         # 全球海洋数据
-│   ├── metadata.json     # 来源、sha256、行数、时间范围
-│   ├── clmta.duckdb      # make db 生成的数仓
-│   └── raw/              # NOAA 原始快照
-├── docs/
-│   ├── data_dictionary.md
-│   └── ...               # 方案书与架构图
+│   ├── clmta.duckdb      # make db 生成的 DuckDB 数据仓库
+│   ├── metadata.json     # 数据来源、校验记录和版本信息
+│   └── raw/              # NOAA 原始 CSV 快照
+├── outputs/
+│   └── figures/          # STL、热力图和对比图输出目录
 ├── scripts/
-│   ├── update_data.py    # 数据更新与校验
-│   ├── build_db.py       # raw → staging → marts
-│   └── queries.py        # 示例 SQL
-├── src/                  # 项目源代码
+│   ├── update_data.py    # 数据下载与校验脚本
+│   ├── build_db.py       # raw -> staging -> marts 构建脚本
+│   ├── analyze.py        # 时间序列分析与绘图脚本
+│   └── ...
 ├── tests/                # 自动化测试
-├── Makefile              # 常用命令
+├── Makefile              # 常用命令入口
+├── README.md             # 项目说明
+├── pyproject.toml        # Python 依赖与工具配置
 ├── PLAN.md               # 项目规划
-└── pyproject.toml        # Python 项目配置
+├── docs/                 # 文档与架构说明
+└── src/                  # 后续开发代码目录
 ```
 
-## 数据说明
+### 技术栈
 
-数据记录的是全球陆地与海洋的月度温度异常。例如，某个月的值为 `1.33`，表示该月温度比 1901-2000 年基准期的同期平均值高 1.33 ℃。
+- Python 3.12：核心开发语言。
+- uv：依赖与环境管理。
+- pandas：数据读取与清洗。
+- DuckDB：本地分析型数据库，支撑 `raw / staging / marts` 三层结构。
+- statsmodels：STL 时间序列分解。
+- scipy：趋势检验与统计计算。
+- ruptures：变点检测。
+- seaborn / matplotlib：数据可视化。
+- pytest / ruff：自动化测试与代码规范检查。
 
-温度异常不能直接当作绝对气温使用。早期观测资料相对有限，使用数据进行分析时也应注意数据覆盖范围和历史数据修订的影响。NOAA 可能会调整历史数据，因此项目会保留原始快照，并记录更新后的元数据。
+## 数据范围
+
+- 数据来源：NOAA Climate at a Glance（CAG）
+- 时间范围：1850-01 至 2026-09
+- 基准期：1901-2000
+- 数据单位：摄氏度（℃）
+- 指标含义：月度温度异常值，相较于 1901-2000 参考期的同期平均偏差
+- 主要区域：`Land_Ocean`、`Land`、`Ocean`
+
+## Roadmap
+
+下一阶段计划重点围绕以下两个方面展开：
+
+1. 滚动回测与预测建模：
+   - 引入 LightGBM 作为基线预测模型；
+   - 结合 Chronos 等时间序列模型进行对比实验；
+   - 构建统一的滚动窗口回测流程与评估指标体系。
+
+2. 交互式分析看板：
+   - 使用 Streamlit 构建可视化仪表盘；
+   - 支持趋势分析、突变点展示、区域对比和预测结果交互；
+   - 提供可复现的研究与展示入口。
+
+当前项目已完成数据管道、仓库构建和核心分析，可基于此继续扩展模型预测与交互式展示能力。
 
 ## 数据来源与许可
 
 数据来自 [NOAA Climate at a Glance](https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series)。使用或再发布数据时，请保留 NOAA 的来源说明，并以官方页面为准。
 
-代码和项目文档的许可信息仍在完善中。欢迎通过 Issue 或 Pull Request 交流问题和改进建议。
+代码和项目文档的许可信息仍在完善中，欢迎通过 Issue 或 Pull Request 交流问题和改进建议。
