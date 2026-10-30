@@ -9,10 +9,15 @@ import lightgbm as lgb
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 DB_PATH = Path("data/clmta.duckdb")
-FIGURE_PATH = Path("outputs/figures/forecast_comparison.png")
+OUTPUT_DIR = Path("outputs")
+FIGURE_PATH = OUTPUT_DIR / "figures" / "forecast_comparison.png"
+METRICS_PATH = OUTPUT_DIR / "forecast_metrics.csv"
+PREDICTIONS_PATH = OUTPUT_DIR / "forecast_predictions.csv"
+DM_PATH = OUTPUT_DIR / "forecast_dm_tests.csv"
 TEST_START = pd.Timestamp("2024-10-01")
 TEST_END = pd.Timestamp("2026-09-01")
 SEASONAL_PERIOD = 12
@@ -216,11 +221,44 @@ def mae(actual: pd.Series, predicted: pd.Series) -> float:
     return float((actual - predicted).abs().mean())
 
 
+def interval_coverage(
+    actual: pd.Series,
+    lower: pd.Series,
+    upper: pd.Series,
+) -> float:
+    """Return the share of actual values inside the prediction interval."""
+    covered = (actual >= lower) & (actual <= upper)
+    return float(covered.mean())
+
+
+def mean_interval_width(lower: pd.Series, upper: pd.Series) -> float:
+    """Return the average width of a prediction interval."""
+    return float((upper - lower).mean())
+
+
+def diebold_mariano(
+    actual: pd.Series,
+    forecast_a: pd.Series,
+    forecast_b: pd.Series,
+) -> tuple[float, float]:
+    """Compare squared errors of two forecasts with a simple DM test."""
+    error_a = (actual - forecast_a) ** 2
+    error_b = (actual - forecast_b) ** 2
+    difference = error_a - error_b
+    n = len(difference)
+    variance = float(difference.var(ddof=1))
+    if n < 2 or variance <= 0:
+        return float("nan"), float("nan")
+    statistic = float(difference.mean() / np.sqrt(variance / n))
+    p_value = float(2 * (1 - norm.cdf(abs(statistic))))
+    return statistic, p_value
+
+
 def evaluate(
     predictions: pd.DataFrame,
     training: pd.Series,
 ) -> pd.DataFrame:
-    """Calculate MASE and RMSE for each backtested model."""
+    """Calculate point and interval metrics for each backtested model."""
     model_columns = {
         "Seasonal Naive": "seasonal_naive",
         "Drift": "drift",
@@ -231,14 +269,32 @@ def evaluate(
     actual = predictions["actual"]
     for model_name, column in model_columns.items():
         forecast = predictions[column]
-        results.append(
-            {
-                "model": model_name,
-                "MASE": mase(actual, forecast, training),
-                "RMSE": rmse(actual, forecast),
-                "MAE": mae(actual, forecast),
-            }
-        )
+        row = {
+            "model": model_name,
+            "MASE": mase(actual, forecast, training),
+            "RMSE": rmse(actual, forecast),
+            "MAE": mae(actual, forecast),
+        }
+        if model_name == "SARIMAX":
+            row["Coverage80"] = interval_coverage(
+                actual,
+                predictions["sarimax_lower_80"],
+                predictions["sarimax_upper_80"],
+            )
+            row["Width80"] = mean_interval_width(
+                predictions["sarimax_lower_80"],
+                predictions["sarimax_upper_80"],
+            )
+            row["Coverage95"] = interval_coverage(
+                actual,
+                predictions["sarimax_lower_95"],
+                predictions["sarimax_upper_95"],
+            )
+            row["Width95"] = mean_interval_width(
+                predictions["sarimax_lower_95"],
+                predictions["sarimax_upper_95"],
+            )
+        results.append(row)
     return pd.DataFrame(results).set_index("model")
 
 
@@ -287,9 +343,9 @@ def plot_results(predictions: pd.DataFrame) -> None:
         alpha=0.22,
         label="SARIMAX 80% interval",
     )
-    axis.set_title("Rolling-Origin Forecast Comparison")
+    axis.set_title("Rolling-Origin One-Step Forecast Comparison")
     axis.set_xlabel("Date")
-    axis.set_ylabel("Temperature anomaly")
+    axis.set_ylabel("Temperature anomaly (°C)")
     axis.legend()
     axis.grid(alpha=0.25)
     figure.tight_layout()
@@ -316,11 +372,35 @@ def main() -> None:
 
     predictions = rolling_backtest(train, test)
     metrics = evaluate(predictions, train)
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    predictions.to_csv(PREDICTIONS_PATH)
+    metrics.to_csv(METRICS_PATH)
+
+    dm_rows = []
+    for baseline in ("seasonal_naive", "drift", "lightgbm"):
+        statistic, p_value = diebold_mariano(
+            predictions["actual"],
+            predictions["sarimax"],
+            predictions[baseline],
+        )
+        dm_rows.append(
+            {"baseline": baseline, "DM": statistic, "p_value": p_value}
+        )
+    dm_tests = pd.DataFrame(dm_rows).set_index("baseline")
+    dm_tests.to_csv(DM_PATH)
+
     print(f"训练集：{train.index[0].date()} 至 {train.index[-1].date()}（{len(train)} 个月）")
     print(f"测试集：{test.index[0].date()} 至 {test.index[-1].date()}（{len(test)} 个月）")
+    print("口径：每个测试月用当时可见历史预测下一个月，共 24 个一步预测。")
     print(metrics.to_string(float_format=lambda value: f"{value:.4f}"))
+    print("\nDM 检验（负值表示 SARIMAX 的平方误差更小）：")
+    print(dm_tests.to_string(float_format=lambda value: f"{value:.4f}"))
     plot_results(predictions)
-    print(f"图表已保存至 {FIGURE_PATH}")
+    print(f"\n图表已保存至 {FIGURE_PATH}")
+    print(f"指标已保存至 {METRICS_PATH}")
+    print(f"预测已保存至 {PREDICTIONS_PATH}")
+    print(f"DM 检验已保存至 {DM_PATH}")
 
 
 if __name__ == "__main__":

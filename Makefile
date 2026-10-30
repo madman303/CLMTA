@@ -1,4 +1,4 @@
-.PHONY: test data db query pipeline
+.PHONY: test data db query analyze forecast pipeline
 
 test:
 	@echo "==> Checking code style (Ruff)..."
@@ -17,6 +17,14 @@ db:
 query:
 	@echo "==> Running example queries..."
 	uv run python scripts/queries.py
+
+analyze:
+	@echo "==> Running statistical analysis and figures..."
+	uv run python scripts/analyze.py
+
+forecast:
+	@echo "==> Running one-step rolling-origin backtest..."
+	uv run python scripts/forecast.py
 
 pipeline: data db
 	@echo "==> Data and warehouse are up to date."

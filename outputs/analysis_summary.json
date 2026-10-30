@@ -1,0 +1,45 @@
+{
+  "data_start": "1850-01",
+  "data_end": "2026-09",
+  "stl": {
+    "period": 12,
+    "robust": true
+  },
+  "trend": {
+    "method": "annual Mann-Kendall + Theil-Sen",
+    "year_start": 1850,
+    "year_end": 2025,
+    "n_years": 176,
+    "S": 9428.0,
+    "Z": 12.061576761326883,
+    "p_value": 0.0,
+    "slope_per_decade": 0.053283812419384555,
+    "slope_ci95_per_decade": [
+      0.04551282051282051,
+      0.060964912280701763
+    ]
+  },
+  "change_points": {
+    "method": "Pelt(rbf) on annual means",
+    "selected_penalty": 10,
+    "breakpoints": [
+      1935,
+      1980
+    ],
+    "sensitivity": {
+      "5": [
+        1935,
+        1980,
+        1995,
+        2015
+      ],
+      "10": [
+        1935,
+        1980
+      ],
+      "20": [
+        1980
+      ]
+    }
+  }
+}

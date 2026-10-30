@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import duckdb
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import ruptures as rpt
 import seaborn as sns
-from scipy.stats import kendalltau
+from scipy.stats import norm, theilslopes
 from statsmodels.tsa.seasonal import STL
 
 DB_PATH = Path("data/clmta.duckdb")
 OUTPUT_DIR = Path("outputs/figures")
+SUMMARY_PATH = Path("outputs/analysis_summary.json")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-plt.rcParams["font.sans-serif"] = ["SimHei"]
+plt.rcParams["font.sans-serif"] = ["SimHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 
 
@@ -84,27 +87,101 @@ def task1_stl_decomposition(df: pd.DataFrame) -> None:
     plt.close(figure)
 
 
-def task2_trend_test(df: pd.DataFrame) -> None:
-    """Run and print a Kendall rank correlation trend test."""
-    print("==> 2. 正在做 Mann-Kendall 趋势检验...")
-    tau, p_value = kendalltau(range(len(df)), df["Anomaly"])
-    print(f"Kendall's tau: {tau:.4f}")
-    print(f"P-value: {p_value:.4e}")
+def annual_means(df: pd.DataFrame) -> pd.Series:
+    """Return annual means, excluding a partially observed final year."""
+    annual = df.groupby("year")["Anomaly"].mean()
+    last_year = int(df["year"].max())
+    observed_months = df.loc[df["year"] == last_year, "month"].nunique()
+    if observed_months < 12:
+        annual = annual[annual.index < last_year]
+    return annual
+
+
+def mann_kendall(values: np.ndarray) -> tuple[float, float, float]:
+    """Compute the Mann-Kendall S statistic, Z score and two-sided p-value."""
+    x = np.asarray(values, dtype=float)
+    n = x.size
+    if n < 3:
+        raise ValueError("Mann-Kendall requires at least three observations")
+
+    s = 0.0
+    for index in range(n - 1):
+        s += float(np.sign(x[index + 1 :] - x[index]).sum())
+
+    _, counts = np.unique(x, return_counts=True)
+    tie_term = sum(int(t) * (int(t) - 1) * (2 * int(t) + 5) for t in counts)
+    variance = (n * (n - 1) * (2 * n + 5) - tie_term) / 18
+    if variance <= 0:
+        return s, 0.0, 1.0
+
+    if s > 0:
+        z = (s - 1) / np.sqrt(variance)
+    elif s < 0:
+        z = (s + 1) / np.sqrt(variance)
+    else:
+        z = 0.0
+    p_value = 2 * (1 - norm.cdf(abs(z)))
+    return float(s), float(z), float(p_value)
+
+
+def task2_trend_test(df: pd.DataFrame) -> dict:
+    """Run an annual Mann-Kendall test and a Theil-Sen slope estimate."""
+    print("==> 2. 正在做年度 Mann-Kendall 检验与 Theil-Sen 斜率...")
+    annual = annual_means(df)
+    s, z, p_value = mann_kendall(annual.to_numpy())
+    slope, _, lower, upper = theilslopes(
+        annual.to_numpy(),
+        annual.index.to_numpy(),
+    )
+
+    print(f"年度范围：{annual.index.min()}–{annual.index.max()}（{len(annual)} 个完整年份）")
+    print(f"Mann-Kendall S={s:.1f}, Z={z:.3f}, p={p_value:.4e}")
+    print(
+        f"Theil-Sen 斜率：{slope * 10:.4f} °C/十年，"
+        f"95% CI [{lower * 10:.4f}, {upper * 10:.4f}]"
+    )
     if p_value < 0.05:
-        print("✅ 存在显著上升趋势")
+        print("✅ 年度尺度存在显著上升趋势")
+
+    return {
+        "method": "annual Mann-Kendall + Theil-Sen",
+        "year_start": int(annual.index.min()),
+        "year_end": int(annual.index.max()),
+        "n_years": int(len(annual)),
+        "S": s,
+        "Z": z,
+        "p_value": p_value,
+        "slope_per_decade": float(slope * 10),
+        "slope_ci95_per_decade": [float(lower * 10), float(upper * 10)],
+    }
 
 
-def task3_change_point(df: pd.DataFrame) -> None:
-    """Find change points in annual mean anomaly values."""
+def task3_change_point(df: pd.DataFrame) -> dict:
+    """Detect annual-mean change points and check penalty sensitivity."""
     print("==> 3. 正在做变点检测...")
-    annual = df.groupby("year", as_index=False)["Anomaly"].mean()
-    values = annual["Anomaly"].to_numpy().reshape(-1, 1)
-    breakpoints = rpt.Pelt(model="rbf").fit(values).predict(pen=10)
+    annual = annual_means(df)
+    values = annual.to_numpy().reshape(-1, 1)
 
-    for breakpoint in breakpoints[:-1]:
-        if breakpoint < len(annual):
-            year = int(annual.iloc[breakpoint]["year"])
-            print(f"突变发生的年份：{year}")
+    sensitivity: dict[str, list[int]] = {}
+    for penalty in (5, 10, 20):
+        breakpoints = rpt.Pelt(model="rbf").fit(values).predict(pen=penalty)
+        years = [
+            int(annual.index[index])
+            for index in breakpoints[:-1]
+            if index < len(annual)
+        ]
+        sensitivity[str(penalty)] = years
+
+    selected = sensitivity["10"]
+    print(f"pen=10 的变点年份：{selected}")
+    print(f"pen=5/10/20 敏感性：{sensitivity}")
+
+    return {
+        "method": "Pelt(rbf) on annual means",
+        "selected_penalty": 10,
+        "breakpoints": selected,
+        "sensitivity": sensitivity,
+    }
 
 
 def task4_heatmap(df: pd.DataFrame) -> None:
@@ -127,7 +204,10 @@ def task4_heatmap(df: pd.DataFrame) -> None:
         center=0,
         cbar_kws={"label": "Temperature Anomaly"},
     )
-    axis.set_title("Monthly Temperature Anomaly Heatmap (By Decade)")
+    axis.set_title(
+        "Monthly Temperature Anomaly Heatmap (By Decade)\n"
+        "2020s partial: 2020–2026"
+    )
     axis.set_xlabel("Month")
     axis.set_ylabel("Decade")
     figure.tight_layout()
@@ -147,17 +227,37 @@ def task5_land_ocean_compare() -> None:
     axis.plot(land_rolling.index, land_rolling, label="Land", color="red")
     axis.plot(ocean_rolling.index, ocean_rolling, label="Ocean", color="blue")
     axis.set_title("Land vs Ocean Temperature Anomaly Trend")
+    axis.set_ylabel("Temperature anomaly (°C)")
     axis.legend()
     figure.tight_layout()
     figure.savefig(OUTPUT_DIR / "land_ocean_compare.png", dpi=300)
     plt.close(figure)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run all analyses, save figures and a compact JSON summary."""
     main_data = get_data("Land_Ocean")
     task1_stl_decomposition(main_data)
-    task2_trend_test(main_data)
-    task3_change_point(main_data)
+    trend = task2_trend_test(main_data)
+    change_points = task3_change_point(main_data)
     task4_heatmap(main_data)
     task5_land_ocean_compare()
+
+    summary = {
+        "data_start": main_data["obs_date"].min().strftime("%Y-%m"),
+        "data_end": main_data["obs_date"].max().strftime("%Y-%m"),
+        "stl": {"period": 12, "robust": True},
+        "trend": trend,
+        "change_points": change_points,
+    }
+    SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SUMMARY_PATH.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"\n分析摘要已保存至 {SUMMARY_PATH}")
     print("🎉 所有分析与画图任务已完成！请去 outputs/figures/ 查看。")
+
+
+if __name__ == "__main__":
+    main()
