@@ -1,4 +1,9 @@
-"""Rolling-origin backtesting for global land-ocean temperature anomalies."""
+"""Multi-horizon rolling-origin backtesting for global temperature anomalies.
+
+For every origin, the model only sees data through that origin. Forecasts for
+h=1, 3, 6, 12 and 24 months are made from that fixed history; actual values
+inside the forecast window are never written back into the model history.
+"""
 
 from __future__ import annotations
 
@@ -9,17 +14,21 @@ import lightgbm as lgb
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 DB_PATH = Path("data/clmta.duckdb")
 OUTPUT_DIR = Path("outputs")
-FIGURE_PATH = OUTPUT_DIR / "figures" / "forecast_comparison.png"
-METRICS_PATH = OUTPUT_DIR / "forecast_metrics.csv"
-PREDICTIONS_PATH = OUTPUT_DIR / "forecast_predictions.csv"
-DM_PATH = OUTPUT_DIR / "forecast_dm_tests.csv"
-TEST_START = pd.Timestamp("2024-10-01")
-TEST_END = pd.Timestamp("2026-09-01")
+FIGURE_DIR = OUTPUT_DIR / "figures"
+METRICS_PATH = OUTPUT_DIR / "forecast_horizon_metrics.csv"
+PREDICTIONS_PATH = OUTPUT_DIR / "forecast_horizon_predictions.csv"
+RMSE_PLOT = FIGURE_DIR / "forecast_horizon_rmse.png"
+COVERAGE_PLOT = FIGURE_DIR / "forecast_horizon_coverage.png"
+
+TRAIN_START = pd.Timestamp("2000-01-01")
+FIRST_ORIGIN = pd.Timestamp("2020-09-01")
+HORIZONS = (1, 3, 6, 12, 24)
+MAX_HORIZON = max(HORIZONS)
+ORIGIN_FREQ = "6MS"
 SEASONAL_PERIOD = 12
 FEATURE_COLUMNS = [
     "lag_1",
@@ -27,8 +36,14 @@ FEATURE_COLUMNS = [
     "lag_6",
     "lag_12",
     "rolling_mean_12",
-    "month",
+    "target_month",
 ]
+MODEL_COLUMNS = {
+    "Seasonal Naive": "seasonal_naive",
+    "Drift": "drift",
+    "SARIMAX": "sarimax",
+    "LightGBM": "lightgbm",
+}
 
 
 def get_data() -> pd.DataFrame:
@@ -54,11 +69,7 @@ def get_data() -> pd.DataFrame:
             parameters = ["Land_Ocean"]
         elif ("marts", "monthly_anomaly") in table_names:
             query = """
-                SELECT
-                    obs_date,
-                    year,
-                    month,
-                    anomaly AS Anomaly
+                SELECT obs_date, year, month, anomaly AS Anomaly
                 FROM marts.monthly_anomaly
                 WHERE series = ?
                 ORDER BY obs_date
@@ -75,38 +86,51 @@ def get_data() -> pd.DataFrame:
 
     frame["obs_date"] = pd.to_datetime(frame["obs_date"])
     frame = frame.sort_values("obs_date").reset_index(drop=True)
-    frame = frame[frame["obs_date"] >= pd.Timestamp("2000-01-01")].reset_index(
-        drop=True
-    )
+    frame = frame[frame["obs_date"] >= TRAIN_START].reset_index(drop=True)
     expected_dates = pd.date_range(
         frame["obs_date"].min(),
         frame["obs_date"].max(),
         freq="MS",
     )
     if not frame["obs_date"].equals(pd.Series(expected_dates, name="obs_date")):
-        raise ValueError("The 2000-to-present series contains missing or duplicate months")
+        raise ValueError("The series contains missing or duplicate months")
     return frame
 
 
-def seasonal_naive_forecast(history: pd.Series) -> float:
-    """Predict one month using the value from the same month one year earlier."""
+def build_origins(data: pd.Series) -> list[pd.Timestamp]:
+    """Build forecast origins with enough future data for the longest horizon."""
+    latest_origin = data.index.max() - pd.DateOffset(months=MAX_HORIZON)
+    origins = pd.date_range(FIRST_ORIGIN, latest_origin, freq=ORIGIN_FREQ)
+    if len(origins) < 3:
+        raise ValueError("Need at least three forecast origins")
+    return [pd.Timestamp(origin) for origin in origins]
+
+
+def seasonal_naive_path(history: pd.Series) -> dict[int, float]:
+    """Recursive seasonal naive forecasts for every month up to MAX_HORIZON."""
     if len(history) < SEASONAL_PERIOD:
-        raise ValueError("Seasonal naive forecasting requires 12 history months")
-    return float(history.iloc[-SEASONAL_PERIOD])
+        raise ValueError("Seasonal naive needs at least 12 history months")
+
+    path: dict[int, float] = {}
+    for horizon in range(1, MAX_HORIZON + 1):
+        if horizon <= SEASONAL_PERIOD:
+            path[horizon] = float(history.iloc[horizon - SEASONAL_PERIOD - 1])
+        else:
+            path[horizon] = path[horizon - SEASONAL_PERIOD]
+    return path
 
 
-def drift_forecast(history: pd.Series) -> float:
-    """Predict one month by extrapolating the slope between the endpoints."""
+def drift_path(history: pd.Series) -> dict[int, float]:
+    """Extrapolate the endpoint slope for every horizon up to MAX_HORIZON."""
     if len(history) < 2:
-        raise ValueError("Drift forecasting requires at least two observations")
-    slope = (history.iloc[-1] - history.iloc[0]) / (len(history) - 1)
-    return float(history.iloc[-1] + slope)
+        raise ValueError("Drift needs at least two observations")
+    slope = (float(history.iloc[-1]) - float(history.iloc[0])) / (len(history) - 1)
+    last = float(history.iloc[-1])
+    return {horizon: last + horizon * slope for horizon in range(1, MAX_HORIZON + 1)}
 
 
-def sarimax_forecast(
-    history: pd.Series,
-) -> tuple[float, float, float, float, float]:
-    """Fit SARIMAX and return the forecast plus 80% and 95% intervals."""
+def sarimax_path(history: pd.Series) -> dict[int, dict[str, float]]:
+    """Fit one SARIMAX per origin and return its multi-step forecast path."""
     model = SARIMAX(
         history,
         order=(1, 0, 0),
@@ -115,33 +139,65 @@ def sarimax_forecast(
         enforce_invertibility=False,
     )
     fitted = model.fit(disp=False)
-    forecast = fitted.get_forecast(steps=1)
-    mean = float(forecast.predicted_mean.iloc[0])
-    intervals_80 = forecast.conf_int(alpha=0.20).iloc[0]
-    intervals_95 = forecast.conf_int(alpha=0.05).iloc[0]
-    lower_80 = float(intervals_80.iloc[0])
-    upper_80 = float(intervals_80.iloc[1])
-    lower_95 = float(intervals_95.iloc[0])
-    upper_95 = float(intervals_95.iloc[1])
-    return mean, lower_80, upper_80, lower_95, upper_95
+    forecast = fitted.get_forecast(steps=MAX_HORIZON)
+    mean = np.asarray(forecast.predicted_mean, dtype=float)
+    interval_80 = np.asarray(forecast.conf_int(alpha=0.20), dtype=float)
+    interval_95 = np.asarray(forecast.conf_int(alpha=0.05), dtype=float)
+
+    return {
+        horizon: {
+            "mean": float(mean[horizon - 1]),
+            "lower_80": float(interval_80[horizon - 1, 0]),
+            "upper_80": float(interval_80[horizon - 1, 1]),
+            "lower_95": float(interval_95[horizon - 1, 0]),
+            "upper_95": float(interval_95[horizon - 1, 1]),
+        }
+        for horizon in range(1, MAX_HORIZON + 1)
+    }
 
 
-def build_features(series: pd.Series) -> pd.DataFrame:
-    """Build lag, rolling-mean, and calendar features without forward filling."""
-    features = pd.DataFrame(index=series.index)
-    features["lag_1"] = series.shift(1)
-    features["lag_3"] = series.shift(3)
-    features["lag_6"] = series.shift(6)
-    features["lag_12"] = series.shift(12)
-    features["rolling_mean_12"] = series.shift(1).rolling(12).mean()
-    features["month"] = series.index.month
-    return features
+def feature_row(values: np.ndarray, index: int, target_date: pd.Timestamp) -> list[float]:
+    """Build a direct-forecast feature row using only data through `index`."""
+    if index < SEASONAL_PERIOD - 1:
+        raise ValueError("Not enough history for lag features")
+    return [
+        float(values[index]),
+        float(values[index - 2]),
+        float(values[index - 5]),
+        float(values[index - 11]),
+        float(values[index - 11 : index + 1].mean()),
+        float(target_date.month),
+    ]
 
 
-def train_lightgbm(train: pd.Series) -> lgb.LGBMRegressor:
-    """Fit LightGBM on features derived only from the training history."""
-    features = build_features(train)
-    training = features.assign(target=train).dropna()
+def direct_training_set(
+    history: pd.Series,
+    horizon: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build leakage-free direct training data for one forecast horizon."""
+    values = history.to_numpy(dtype=float)
+    dates = history.index
+    rows: list[list[float]] = []
+    targets: list[float] = []
+
+    for index in range(SEASONAL_PERIOD - 1, len(values)):
+        target_date = dates[index] + pd.DateOffset(months=horizon)
+        if target_date > dates[-1]:
+            continue
+        target_position = dates.get_indexer([target_date])[0]
+        if target_position < 0:
+            continue
+        rows.append(feature_row(values, index, target_date))
+        targets.append(float(values[target_position]))
+
+    if not rows:
+        raise ValueError(f"Not enough history for LightGBM horizon {horizon}")
+    return np.asarray(rows, dtype=float), np.asarray(targets, dtype=float)
+
+
+def lightgbm_direct_forecast(history: pd.Series, horizon: int) -> float:
+    """Fit a horizon-specific LightGBM model and forecast from the origin."""
+    features, target = direct_training_set(history, horizon)
     model = lgb.LGBMRegressor(
         objective="regression",
         n_estimators=200,
@@ -151,74 +207,56 @@ def train_lightgbm(train: pd.Series) -> lgb.LGBMRegressor:
         random_state=42,
         verbosity=-1,
     )
-    model.fit(training[FEATURE_COLUMNS], training["target"])
-    return model
+    model.fit(features, target)
+
+    target_date = history.index[-1] + pd.DateOffset(months=horizon)
+    row = np.asarray(
+        [feature_row(history.to_numpy(dtype=float), len(history) - 1, target_date)],
+        dtype=float,
+    )
+    return float(model.predict(row)[0])
 
 
-def lightgbm_forecast(
-    model: lgb.LGBMRegressor,
-    history: pd.Series,
-    timestamp: pd.Timestamp,
-) -> float:
-    """Predict one month from a history that may contain prior predictions."""
-    series = pd.concat([history, pd.Series(index=[timestamp], dtype=float)])
-    feature_row = build_features(series).loc[[timestamp], FEATURE_COLUMNS]
-    return float(model.predict(feature_row)[0])
+def backtest(data: pd.Series) -> pd.DataFrame:
+    """Run multi-horizon forecasts from fixed origins without backfilling."""
+    origins = build_origins(data)
+    records: list[dict[str, object]] = []
 
+    for origin in origins:
+        history = data.loc[data.index <= origin]
+        scale = float(history.diff(SEASONAL_PERIOD).abs().dropna().mean())
+        if not np.isfinite(scale) or scale == 0:
+            raise ValueError(f"Invalid MASE scale at origin {origin.date()}")
 
-def rolling_backtest(
-    train: pd.Series,
-    test: pd.Series,
-) -> pd.DataFrame:
-    """Run one-step-ahead rolling-origin predictions across the test set."""
-    history = train.copy()
-    lightgbm_model = train_lightgbm(train)
-    predictions: list[dict[str, float | pd.Timestamp]] = []
+        sarimax = sarimax_path(history)
+        seasonal_naive = seasonal_naive_path(history)
+        drift = drift_path(history)
 
-    for timestamp, actual in test.items():
-        seasonal_naive = seasonal_naive_forecast(history)
-        drift = drift_forecast(history)
-        sarimax = sarimax_forecast(history)
-        lightgbm_prediction = lightgbm_forecast(
-            lightgbm_model,
-            history,
-            timestamp,
-        )
-        predictions.append(
-            {
-                "obs_date": timestamp,
-                "actual": float(actual),
-                "seasonal_naive": seasonal_naive,
-                "drift": drift,
-                "sarimax": sarimax[0],
-                "sarimax_lower_80": sarimax[1],
-                "sarimax_upper_80": sarimax[2],
-                "sarimax_lower_95": sarimax[3],
-                "sarimax_upper_95": sarimax[4],
-                "lightgbm": lightgbm_prediction,
-            }
-        )
-        history.loc[timestamp] = actual
+        for horizon in HORIZONS:
+            target_date = origin + pd.DateOffset(months=horizon)
+            if target_date not in data.index:
+                continue
+            actual = float(data.loc[target_date])
+            interval = sarimax[horizon]
+            records.append(
+                {
+                    "origin": origin,
+                    "horizon": horizon,
+                    "target_date": target_date,
+                    "actual": actual,
+                    "scale": scale,
+                    "seasonal_naive": seasonal_naive[horizon],
+                    "drift": drift[horizon],
+                    "sarimax": interval["mean"],
+                    "sarimax_lower_80": interval["lower_80"],
+                    "sarimax_upper_80": interval["upper_80"],
+                    "sarimax_lower_95": interval["lower_95"],
+                    "sarimax_upper_95": interval["upper_95"],
+                    "lightgbm": lightgbm_direct_forecast(history, horizon),
+                }
+            )
 
-    return pd.DataFrame(predictions).set_index("obs_date")
-
-
-def mase(actual: pd.Series, predicted: pd.Series, training: pd.Series) -> float:
-    """Calculate seasonal MASE using one-year seasonal differences."""
-    scale = training.diff(SEASONAL_PERIOD).abs().dropna().mean()
-    if not np.isfinite(scale) or scale == 0:
-        raise ValueError("MASE scale is zero or non-finite")
-    return float((actual - predicted).abs().mean() / scale)
-
-
-def rmse(actual: pd.Series, predicted: pd.Series) -> float:
-    """Calculate root mean squared error."""
-    return float(np.sqrt(((actual - predicted) ** 2).mean()))
-
-
-def mae(actual: pd.Series, predicted: pd.Series) -> float:
-    """Calculate mean absolute error."""
-    return float((actual - predicted).abs().mean())
+    return pd.DataFrame(records)
 
 
 def interval_coverage(
@@ -236,171 +274,143 @@ def mean_interval_width(lower: pd.Series, upper: pd.Series) -> float:
     return float((upper - lower).mean())
 
 
-def diebold_mariano(
-    actual: pd.Series,
-    forecast_a: pd.Series,
-    forecast_b: pd.Series,
-) -> tuple[float, float]:
-    """Compare squared errors of two forecasts with a simple DM test."""
-    error_a = (actual - forecast_a) ** 2
-    error_b = (actual - forecast_b) ** 2
-    difference = error_a - error_b
-    n = len(difference)
-    variance = float(difference.var(ddof=1))
-    if n < 2 or variance <= 0:
-        return float("nan"), float("nan")
-    statistic = float(difference.mean() / np.sqrt(variance / n))
-    p_value = float(2 * (1 - norm.cdf(abs(statistic))))
-    return statistic, p_value
+def evaluate_by_horizon(predictions: pd.DataFrame) -> pd.DataFrame:
+    """Calculate MASE, RMSE, MAE and interval metrics for each horizon."""
+    results: list[dict[str, object]] = []
+    for horizon in HORIZONS:
+        subset = predictions[predictions["horizon"] == horizon]
+        if subset.empty:
+            continue
+        actual = subset["actual"]
+        for model_name, column in MODEL_COLUMNS.items():
+            error = actual - subset[column]
+            row: dict[str, object] = {
+                "horizon": horizon,
+                "model": model_name,
+                "n": int(len(subset)),
+                "MASE": float((error.abs() / subset["scale"]).mean()),
+                "RMSE": float(np.sqrt((error**2).mean())),
+                "MAE": float(error.abs().mean()),
+            }
+            if model_name == "SARIMAX":
+                row["Coverage80"] = interval_coverage(
+                    actual,
+                    subset["sarimax_lower_80"],
+                    subset["sarimax_upper_80"],
+                )
+                row["Width80"] = mean_interval_width(
+                    subset["sarimax_lower_80"],
+                    subset["sarimax_upper_80"],
+                )
+                row["Coverage95"] = interval_coverage(
+                    actual,
+                    subset["sarimax_lower_95"],
+                    subset["sarimax_upper_95"],
+                )
+                row["Width95"] = mean_interval_width(
+                    subset["sarimax_lower_95"],
+                    subset["sarimax_upper_95"],
+                )
+            results.append(row)
+    return pd.DataFrame(results)
 
 
-def evaluate(
-    predictions: pd.DataFrame,
-    training: pd.Series,
-) -> pd.DataFrame:
-    """Calculate point and interval metrics for each backtested model."""
-    model_columns = {
-        "Seasonal Naive": "seasonal_naive",
-        "Drift": "drift",
-        "SARIMAX": "sarimax",
-        "LightGBM": "lightgbm",
-    }
-    results = []
-    actual = predictions["actual"]
-    for model_name, column in model_columns.items():
-        forecast = predictions[column]
-        row = {
-            "model": model_name,
-            "MASE": mase(actual, forecast, training),
-            "RMSE": rmse(actual, forecast),
-            "MAE": mae(actual, forecast),
-        }
-        if model_name == "SARIMAX":
-            row["Coverage80"] = interval_coverage(
-                actual,
-                predictions["sarimax_lower_80"],
-                predictions["sarimax_upper_80"],
-            )
-            row["Width80"] = mean_interval_width(
-                predictions["sarimax_lower_80"],
-                predictions["sarimax_upper_80"],
-            )
-            row["Coverage95"] = interval_coverage(
-                actual,
-                predictions["sarimax_lower_95"],
-                predictions["sarimax_upper_95"],
-            )
-            row["Width95"] = mean_interval_width(
-                predictions["sarimax_lower_95"],
-                predictions["sarimax_upper_95"],
-            )
-        results.append(row)
-    return pd.DataFrame(results).set_index("model")
-
-
-def plot_results(predictions: pd.DataFrame) -> None:
-    """Plot actuals, forecasts, and SARIMAX prediction intervals."""
-    FIGURE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    figure, axis = plt.subplots(figsize=(14, 7))
-    axis.plot(predictions.index, predictions["actual"], label="Actual", color="black")
-    axis.plot(
-        predictions.index,
-        predictions["seasonal_naive"],
-        label="Seasonal Naive",
-        color="tab:green",
-    )
-    axis.plot(
-        predictions.index,
-        predictions["drift"],
-        label="Drift",
-        color="tab:orange",
-    )
-    axis.plot(
-        predictions.index,
-        predictions["sarimax"],
-        label="SARIMAX",
-        color="tab:blue",
-    )
-    axis.plot(
-        predictions.index,
-        predictions["lightgbm"],
-        label="LightGBM",
-        color="purple",
-    )
-    axis.fill_between(
-        predictions.index,
-        predictions["sarimax_lower_95"],
-        predictions["sarimax_upper_95"],
-        color="tab:blue",
-        alpha=0.12,
-        label="SARIMAX 95% interval",
-    )
-    axis.fill_between(
-        predictions.index,
-        predictions["sarimax_lower_80"],
-        predictions["sarimax_upper_80"],
-        color="tab:blue",
-        alpha=0.22,
-        label="SARIMAX 80% interval",
-    )
-    axis.set_title("Rolling-Origin One-Step Forecast Comparison")
-    axis.set_xlabel("Date")
-    axis.set_ylabel("Temperature anomaly (°C)")
-    axis.legend()
+def plot_rmse(metrics: pd.DataFrame) -> None:
+    """Plot RMSE as a function of forecast horizon."""
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    figure, axis = plt.subplots(figsize=(9, 5.5))
+    for model_name in MODEL_COLUMNS:
+        subset = metrics[metrics["model"] == model_name].sort_values("horizon")
+        axis.plot(
+            subset["horizon"],
+            subset["RMSE"],
+            marker="o",
+            linewidth=1.8,
+            label=model_name,
+        )
+    axis.set_xticks(HORIZONS)
+    axis.set_xlabel("Forecast horizon (months)")
+    axis.set_ylabel("RMSE (°C)")
+    axis.set_title("Multi-Horizon Forecast Error")
     axis.grid(alpha=0.25)
+    axis.legend()
     figure.tight_layout()
-    figure.savefig(FIGURE_PATH, dpi=300)
+    figure.savefig(RMSE_PLOT, dpi=300)
+    plt.close(figure)
+
+
+def plot_coverage(metrics: pd.DataFrame) -> None:
+    """Plot SARIMAX interval coverage as a function of forecast horizon."""
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    sarimax = metrics[metrics["model"] == "SARIMAX"].sort_values("horizon")
+    figure, axis = plt.subplots(figsize=(9, 5.5))
+    axis.plot(
+        sarimax["horizon"],
+        sarimax["Coverage80"],
+        marker="o",
+        linewidth=1.8,
+        label="80% interval",
+    )
+    axis.plot(
+        sarimax["horizon"],
+        sarimax["Coverage95"],
+        marker="s",
+        linewidth=1.8,
+        label="95% interval",
+    )
+    axis.axhline(0.80, color="tab:blue", linestyle="--", alpha=0.4)
+    axis.axhline(0.95, color="tab:orange", linestyle="--", alpha=0.4)
+    axis.set_xticks(HORIZONS)
+    axis.set_ylim(0, 1.05)
+    axis.set_xlabel("Forecast horizon (months)")
+    axis.set_ylabel("Empirical coverage")
+    axis.set_title("SARIMAX Interval Coverage by Horizon")
+    axis.grid(alpha=0.25)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(COVERAGE_PLOT, dpi=300)
     plt.close(figure)
 
 
 def main() -> None:
-    """Run the complete rolling-origin backtest."""
-    data = get_data()
-    data = data.set_index("obs_date").asfreq("MS")
-    if data["Anomaly"].isna().any():
+    """Run the complete multi-horizon backtest and save metrics/figures."""
+    data = get_data().set_index("obs_date")["Anomaly"].asfreq("MS")
+    if data.isna().any():
         raise ValueError("The monthly series contains missing anomaly values")
-    test = data.loc[TEST_START:TEST_END, "Anomaly"]
-    train = data.loc[data.index < TEST_START, "Anomaly"]
 
-    if len(test) != 24:
-        raise ValueError(f"Expected 24 test months, got {len(test)}")
-    if test.index[-1] != TEST_END:
-        raise ValueError(
-            f"Expected test data through {TEST_END.date()}, "
-            f"got {test.index[-1].date()}"
-        )
-
-    predictions = rolling_backtest(train, test)
-    metrics = evaluate(predictions, train)
+    origins = build_origins(data)
+    predictions = backtest(data)
+    metrics = evaluate_by_horizon(predictions)
+    if metrics.empty:
+        raise ValueError("No backtest metrics were produced")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    predictions.to_csv(PREDICTIONS_PATH)
-    metrics.to_csv(METRICS_PATH)
+    predictions.to_csv(PREDICTIONS_PATH, index=False)
+    metrics.to_csv(METRICS_PATH, index=False)
+    plot_rmse(metrics)
+    plot_coverage(metrics)
 
-    dm_rows = []
-    for baseline in ("seasonal_naive", "drift", "lightgbm"):
-        statistic, p_value = diebold_mariano(
-            predictions["actual"],
-            predictions["sarimax"],
-            predictions[baseline],
-        )
-        dm_rows.append(
-            {"baseline": baseline, "DM": statistic, "p_value": p_value}
-        )
-    dm_tests = pd.DataFrame(dm_rows).set_index("baseline")
-    dm_tests.to_csv(DM_PATH)
-
-    print(f"训练集：{train.index[0].date()} 至 {train.index[-1].date()}（{len(train)} 个月）")
-    print(f"测试集：{test.index[0].date()} 至 {test.index[-1].date()}（{len(test)} 个月）")
-    print("口径：每个测试月用当时可见历史预测下一个月，共 24 个一步预测。")
-    print(metrics.to_string(float_format=lambda value: f"{value:.4f}"))
-    print("\nDM 检验（负值表示 SARIMAX 的平方误差更小）：")
-    print(dm_tests.to_string(float_format=lambda value: f"{value:.4f}"))
-    plot_results(predictions)
-    print(f"\n图表已保存至 {FIGURE_PATH}")
-    print(f"指标已保存至 {METRICS_PATH}")
+    print(
+        "口径：每个 origin 固定历史，只做 h=1/3/6/12/24 的多步预测；"
+        "窗口内不回填真实值。"
+    )
+    print(f"origins：{len(origins)} 个（{origins[0].date()} 至 {origins[-1].date()}）")
+    print(f"horizons：{HORIZONS}；每个 horizon 有 {metrics['n'].max()} 个 origin 样本。")
+    print("\nRMSE by horizon:")
+    print(metrics.pivot(index="horizon", columns="model", values="RMSE").round(4).to_string())
+    print("\nMASE by horizon:")
+    print(metrics.pivot(index="horizon", columns="model", values="MASE").round(4).to_string())
+    sarimax = metrics[metrics["model"] == "SARIMAX"]
+    print("\nSARIMAX coverage:")
+    print(
+        sarimax[
+            ["horizon", "Coverage80", "Width80", "Coverage95", "Width95"]
+        ].round(4).to_string(index=False)
+    )
+    print(f"\n指标已保存至 {METRICS_PATH}")
     print(f"预测已保存至 {PREDICTIONS_PATH}")
-    print(f"DM 检验已保存至 {DM_PATH}")
+    print(f"RMSE 图已保存至 {RMSE_PLOT}")
+    print(f"覆盖图已保存至 {COVERAGE_PLOT}")
 
 
 if __name__ == "__main__":

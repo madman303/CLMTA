@@ -23,7 +23,7 @@ analyze:
 	uv run python scripts/analyze.py
 
 forecast:
-	@echo "==> Running one-step rolling-origin backtest..."
+	@echo "==> Running multi-horizon rolling-origin backtest..."
 	uv run python scripts/forecast.py
 
 pipeline: data db
