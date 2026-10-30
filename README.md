@@ -47,6 +47,10 @@ make test
 
 月度热力图从 1850s 到 2020s 逐步呈现出一个非常直观的变化：各月份的温度异常值由早期的浅蓝和偏冷色调，全面转变为后期的深红和强正异常。该图表明全球各月份在过去一个半世纪中普遍偏暖，且暖异常的强度在逐步增强，清晰体现了全球变暖的长期不可逆性。
 
+### 4. 滚动回测预测对比 (Rolling-Origin Forecast)
+![Forecast Comparison](outputs/figures/forecast_comparison.png)
+构建了 Rolling-Origin 回测框架。对比发现，季节性朴素模型（Seasonal Naive）因为无法捕捉最新趋势而失效；SARIMAX 模型能够很好地捕捉趋势与季节性，并将真实值包裹在 80% 的预测区间内。
+
 ## 项目结构与技术栈
 
 ### 项目结构
