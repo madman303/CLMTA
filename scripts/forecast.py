@@ -7,6 +7,7 @@ inside the forecast window are never written back into the model history.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import duckdb
@@ -43,7 +44,20 @@ MODEL_COLUMNS = {
     "Drift": "drift",
     "SARIMAX": "sarimax",
     "LightGBM": "lightgbm",
+    "Chronos": "chronos",
 }
+MODEL_COLORS = {
+    "Seasonal Naive": "tab:green",
+    "Drift": "tab:orange",
+    "SARIMAX": "tab:blue",
+    "LightGBM": "tab:purple",
+    "Chronos": "cyan",
+}
+CHRONOS_MODEL = os.environ.get(
+    "CHRONOS_MODEL_PATH",
+    "amazon/chronos-bolt-small",
+)
+CHRONOS_QUANTILES = [0.1, 0.5, 0.9]
 
 
 def get_data() -> pd.DataFrame:
@@ -156,6 +170,60 @@ def sarimax_path(history: pd.Series) -> dict[int, dict[str, float]]:
     }
 
 
+def load_chronos_pipeline(model_name: str = CHRONOS_MODEL):
+    """Load the Chronos-Bolt pipeline on CPU without any fine-tuning."""
+    import torch
+    from chronos import BaseChronosPipeline
+
+    return BaseChronosPipeline.from_pretrained(
+        model_name,
+        device_map="cpu",
+        torch_dtype=torch.float32,
+    )
+
+
+def chronos_quantiles_to_path(
+    quantiles: np.ndarray,
+) -> dict[int, dict[str, float]]:
+    """Convert Chronos (batch, horizon, 3) quantiles into a forecast path.
+
+    Column 0 is q10, column 1 is q50 (the point forecast), column 2 is q90.
+    """
+    array = np.asarray(quantiles, dtype=float)
+    if array.ndim == 3:
+        array = array[0]
+    if (
+        array.ndim != 2
+        or array.shape[0] < MAX_HORIZON
+        or array.shape[1] != len(CHRONOS_QUANTILES)
+    ):
+        raise ValueError(f"Unexpected Chronos quantile shape: {array.shape}")
+    return {
+        horizon: {
+            "median": float(array[horizon - 1, 1]),
+            "lower_80": float(array[horizon - 1, 0]),
+            "upper_80": float(array[horizon - 1, 2]),
+        }
+        for horizon in range(1, MAX_HORIZON + 1)
+    }
+
+
+def chronos_path(
+    history: pd.Series,
+    pipeline,
+) -> dict[int, dict[str, float]]:
+    """Run zero-shot Chronos-Bolt on the fixed origin history."""
+    import torch
+
+    context = torch.tensor(history.to_numpy(dtype=np.float32))
+    quantiles, _ = pipeline.predict_quantiles(
+        inputs=context,
+        prediction_length=MAX_HORIZON,
+        quantile_levels=CHRONOS_QUANTILES,
+    )
+    return chronos_quantiles_to_path(quantiles.detach().cpu().numpy())
+
+
 def feature_row(values: np.ndarray, index: int, target_date: pd.Timestamp) -> list[float]:
     """Build a direct-forecast feature row using only data through `index`."""
     if index < SEASONAL_PERIOD - 1:
@@ -217,7 +285,7 @@ def lightgbm_direct_forecast(history: pd.Series, horizon: int) -> float:
     return float(model.predict(row)[0])
 
 
-def backtest(data: pd.Series) -> pd.DataFrame:
+def backtest(data: pd.Series, chronos_pipeline) -> pd.DataFrame:
     """Run multi-horizon forecasts from fixed origins without backfilling."""
     origins = build_origins(data)
     records: list[dict[str, object]] = []
@@ -231,6 +299,7 @@ def backtest(data: pd.Series) -> pd.DataFrame:
         sarimax = sarimax_path(history)
         seasonal_naive = seasonal_naive_path(history)
         drift = drift_path(history)
+        chronos = chronos_path(history, chronos_pipeline)
 
         for horizon in HORIZONS:
             target_date = origin + pd.DateOffset(months=horizon)
@@ -253,6 +322,9 @@ def backtest(data: pd.Series) -> pd.DataFrame:
                     "sarimax_lower_95": interval["lower_95"],
                     "sarimax_upper_95": interval["upper_95"],
                     "lightgbm": lightgbm_direct_forecast(history, horizon),
+                    "chronos": chronos[horizon]["median"],
+                    "chronos_lower_80": chronos[horizon]["lower_80"],
+                    "chronos_upper_80": chronos[horizon]["upper_80"],
                 }
             )
 
@@ -292,25 +364,26 @@ def evaluate_by_horizon(predictions: pd.DataFrame) -> pd.DataFrame:
                 "RMSE": float(np.sqrt((error**2).mean())),
                 "MAE": float(error.abs().mean()),
             }
-            if model_name == "SARIMAX":
+            if model_name in {"SARIMAX", "Chronos"}:
                 row["Coverage80"] = interval_coverage(
                     actual,
-                    subset["sarimax_lower_80"],
-                    subset["sarimax_upper_80"],
+                    subset[f"{column}_lower_80"],
+                    subset[f"{column}_upper_80"],
                 )
                 row["Width80"] = mean_interval_width(
-                    subset["sarimax_lower_80"],
-                    subset["sarimax_upper_80"],
+                    subset[f"{column}_lower_80"],
+                    subset[f"{column}_upper_80"],
                 )
-                row["Coverage95"] = interval_coverage(
-                    actual,
-                    subset["sarimax_lower_95"],
-                    subset["sarimax_upper_95"],
-                )
-                row["Width95"] = mean_interval_width(
-                    subset["sarimax_lower_95"],
-                    subset["sarimax_upper_95"],
-                )
+                if model_name == "SARIMAX":
+                    row["Coverage95"] = interval_coverage(
+                        actual,
+                        subset["sarimax_lower_95"],
+                        subset["sarimax_upper_95"],
+                    )
+                    row["Width95"] = mean_interval_width(
+                        subset["sarimax_lower_95"],
+                        subset["sarimax_upper_95"],
+                    )
             results.append(row)
     return pd.DataFrame(results)
 
@@ -325,7 +398,8 @@ def plot_rmse(metrics: pd.DataFrame) -> None:
             subset["horizon"],
             subset["RMSE"],
             marker="o",
-            linewidth=1.8,
+            linewidth=2.4 if model_name == "Chronos" else 1.8,
+            color=MODEL_COLORS[model_name],
             label=model_name,
         )
     axis.set_xticks(HORIZONS)
@@ -340,23 +414,34 @@ def plot_rmse(metrics: pd.DataFrame) -> None:
 
 
 def plot_coverage(metrics: pd.DataFrame) -> None:
-    """Plot SARIMAX interval coverage as a function of forecast horizon."""
+    """Plot SARIMAX and Chronos interval coverage over forecast horizons."""
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     sarimax = metrics[metrics["model"] == "SARIMAX"].sort_values("horizon")
+    chronos = metrics[metrics["model"] == "Chronos"].sort_values("horizon")
     figure, axis = plt.subplots(figsize=(9, 5.5))
     axis.plot(
         sarimax["horizon"],
         sarimax["Coverage80"],
         marker="o",
         linewidth=1.8,
-        label="80% interval",
+        color="tab:blue",
+        label="SARIMAX 80%",
     )
     axis.plot(
         sarimax["horizon"],
         sarimax["Coverage95"],
         marker="s",
         linewidth=1.8,
-        label="95% interval",
+        color="tab:orange",
+        label="SARIMAX 95%",
+    )
+    axis.plot(
+        chronos["horizon"],
+        chronos["Coverage80"],
+        marker="^",
+        linewidth=2.4,
+        color="cyan",
+        label="Chronos 80%",
     )
     axis.axhline(0.80, color="tab:blue", linestyle="--", alpha=0.4)
     axis.axhline(0.95, color="tab:orange", linestyle="--", alpha=0.4)
@@ -364,7 +449,7 @@ def plot_coverage(metrics: pd.DataFrame) -> None:
     axis.set_ylim(0, 1.05)
     axis.set_xlabel("Forecast horizon (months)")
     axis.set_ylabel("Empirical coverage")
-    axis.set_title("SARIMAX Interval Coverage by Horizon")
+    axis.set_title("Interval Coverage by Horizon")
     axis.grid(alpha=0.25)
     axis.legend()
     figure.tight_layout()
@@ -379,7 +464,9 @@ def main() -> None:
         raise ValueError("The monthly series contains missing anomaly values")
 
     origins = build_origins(data)
-    predictions = backtest(data)
+    print(f"Loading Chronos zero-shot model: {CHRONOS_MODEL}")
+    chronos_pipeline = load_chronos_pipeline(CHRONOS_MODEL)
+    predictions = backtest(data, chronos_pipeline)
     metrics = evaluate_by_horizon(predictions)
     if metrics.empty:
         raise ValueError("No backtest metrics were produced")
@@ -400,11 +487,11 @@ def main() -> None:
     print(metrics.pivot(index="horizon", columns="model", values="RMSE").round(4).to_string())
     print("\nMASE by horizon:")
     print(metrics.pivot(index="horizon", columns="model", values="MASE").round(4).to_string())
-    sarimax = metrics[metrics["model"] == "SARIMAX"]
-    print("\nSARIMAX coverage:")
+    coverage = metrics[metrics["model"].isin(["SARIMAX", "Chronos"])]
+    print("\nInterval coverage:")
     print(
-        sarimax[
-            ["horizon", "Coverage80", "Width80", "Coverage95", "Width95"]
+        coverage[
+            ["model", "horizon", "Coverage80", "Width80", "Coverage95", "Width95"]
         ].round(4).to_string(index=False)
     )
     print(f"\n指标已保存至 {METRICS_PATH}")

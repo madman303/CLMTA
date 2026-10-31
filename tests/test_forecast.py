@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from scripts.forecast import (
+    chronos_quantiles_to_path,
     direct_training_set,
     drift_path,
     evaluate_by_horizon,
@@ -63,6 +64,9 @@ def test_evaluate_by_horizon_returns_metrics_and_coverage():
             "sarimax_lower_95": [0.0, 0.0],
             "sarimax_upper_95": [2.0, 2.0],
             "lightgbm": [1.0, 1.0],
+            "chronos": [1.0, 1.0],
+            "chronos_lower_80": [0.0, 0.0],
+            "chronos_upper_80": [2.0, 2.0],
         }
     )
     metrics = evaluate_by_horizon(predictions)
@@ -73,11 +77,13 @@ def test_evaluate_by_horizon_returns_metrics_and_coverage():
         "Drift",
         "SARIMAX",
         "LightGBM",
+        "Chronos",
     }
     horizon_3 = metrics[metrics["horizon"] == 3].set_index("model")
     assert horizon_3.loc["SARIMAX", "MASE"] == 1.0
     assert horizon_3.loc["SARIMAX", "RMSE"] == 1.0
     assert horizon_3.loc["SARIMAX", "Coverage80"] == 1.0
+    assert horizon_3.loc["Chronos", "Coverage80"] == 1.0
 
 
 def test_interval_coverage_and_width():
@@ -93,3 +99,15 @@ def test_direct_training_requires_a_target_inside_history():
     history = pd.Series(np.arange(12, dtype=float), index=index)
     with pytest.raises(ValueError, match="Not enough history"):
         direct_training_set(history, horizon=1)
+
+
+def test_chronos_quantiles_use_median_and_80_percent_interval():
+    quantiles = np.zeros((1, 24, 3), dtype=float)
+    quantiles[0, :, 0] = 1.0
+    quantiles[0, :, 1] = 2.0
+    quantiles[0, :, 2] = 3.0
+
+    path = chronos_quantiles_to_path(quantiles)
+
+    assert path[1] == {"median": 2.0, "lower_80": 1.0, "upper_80": 3.0}
+    assert path[24] == {"median": 2.0, "lower_80": 1.0, "upper_80": 3.0}
